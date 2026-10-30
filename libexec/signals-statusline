@@ -1,0 +1,25 @@
+#!/bin/bash
+# signals-statusline: Claude Code status line command. Saves the plan usage
+# limits Claude Code reports (rate_limits: 5-hour and 7-day windows, Pro/Max
+# only) to ~/.signals/usage/limits.json for the menu bar, and prints a short line.
+# Claude Code only runs status lines in the terminal, not in editor extensions.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+TB="${SIGNALS_HOME:-$HOME/.signals}/usage"
+mkdir -p "$TB"
+input=$(cat)
+# On a Claude plan, money isn't what's limited, so never show a cost.
+mode=$(jq -r '.mode // (if .plan then "plan" else "" end)' "$TB/config.json" 2>/dev/null)
+
+if jq -e '.rate_limits.five_hour or .rate_limits.seven_day' <<<"$input" >/dev/null 2>&1; then
+  jq -c --argjson now "$(date +%s)" '.rate_limits | {five_hour, seven_day, captured_at: $now}' <<<"$input" \
+    > "$TB/limits.json.tmp.$$" 2>/dev/null && mv "$TB/limits.json.tmp.$$" "$TB/limits.json"
+fi
+
+jq -r --arg mode "$mode" '
+  def pct: floor | tostring + "%";
+  def at: strflocaltime("%-I:%M%p") | ascii_downcase;
+  [ "🚧",
+    (.rate_limits.five_hour | if . then "5h \(.used_percentage | pct) (resets \(.resets_at | at))" else empty end),
+    (.rate_limits.seven_day | if . then "week \(.used_percentage | pct)" else empty end),
+    (if .rate_limits or $mode == "plan" then empty else "session $\(.cost.total_cost_usd // 0 | . * 100 | round / 100)" end)
+  ] | join(" · ")' <<<"$input" 2>/dev/null || echo "🚧"

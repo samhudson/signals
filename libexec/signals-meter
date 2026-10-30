@@ -1,0 +1,390 @@
+#!/bin/bash
+# signals-meter: the Usage part of Signals. Computes the current view for the
+# configured mode, writes ~/.signals/usage/state.json, sends notifications, and prints the state.
+#
+#   plan       Claude plan usage: session and weekly %, credits, pace. From what
+#              Claude Code saves on this Mac, or its terminal status line.
+#   anthropic  Billed spend (cost report) + per-session cost from local logs
+#   openai     Billed spend (cost report)
+#   estimate   API-equivalent spend + per-session cost from local logs
+set -u
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+TB="${SIGNALS_HOME:-$HOME/.signals}/usage"
+CACHE="$TB/cache"
+LIBEXEC="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+mkdir -p "$CACHE"
+
+PRICING="$LIBEXEC/pricing.json"
+[ -f "$TB/pricing.json" ] && PRICING="$TB/pricing.json"
+CONFIG="$TB/config.json"
+now=$(date +%s)
+# Usage is off until it's set up (or after `signals usage off`): skip the work.
+if [ ! -f "$CONFIG" ] || [ "$(jq -r '.mode // empty' "$CONFIG" 2>/dev/null)" = off ]; then
+  jq -nc --argjson now "$now" '{mode: "off", updated: $now}' | tee "$TB/state.json"
+  exit 0
+fi
+month=$(date +%Y-%m)
+today=$(date +%Y-%m-%d)
+month_start=$(date -j -f "%Y-%m-%d %H:%M:%S" "$month-01 00:00:00" +%s)
+days_in_month=$(date -j -v+1m -v-1d -f "%Y-%m-%d" "$month-01" +%d)
+phash=$( { echo v3; cat "$PRICING"; } | shasum | cut -c1-8)   # bump v3 when the cache format changes
+mode=$(jq -r '.mode // (if .plan then "plan" elif .budget then "estimate" else "none" end)' "$CONFIG")
+# On a plan, the plan follows your Claude login: an upgrade or downgrade shows
+# up by itself on the next refresh.
+if [ "$mode" = plan ]; then
+  detected=$("$LIBEXEC/signals-plan")
+  if [ -n "$detected" ] && [ "$(jq -c '.plan // {}' "$CONFIG")" != "$detected" ]; then
+    jq --argjson p "$detected" '.plan = $p' "$CONFIG" > "$CONFIG.tmp.$$" && mv "$CONFIG.tmp.$$" "$CONFIG"
+  fi
+fi
+
+# ── Parse Claude Code transcripts touched in the last 40 days (cached per file) ─
+# Per transcript: priced replies, the session title, and "hit your limit" events.
+while IFS= read -r f; do
+  key=$(printf '%s' "$f" | shasum | cut -c1-16)
+  sig="$(stat -f '%z-%m' "$f")-$phash"
+  out="$CACHE/claude-$key.json"
+  [ -f "$out" ] && [ "$(jq -r '.sig' "$out" 2>/dev/null)" = "$sig" ] && continue
+  jq -ncR --slurpfile p "$PRICING" --arg sig "$sig" --arg fsid "$(basename "$f" .jsonl)" '
+    def rate($m):
+      $p[0].models[$m]
+      // ($p[0].models | to_entries | map(select(.key as $k | $m | startswith($k)))
+          | sort_by(-(.key | length)) | first | .value?)
+      // ($p[0].families | to_entries | map(select(.key as $k | $m | contains($k))) | first | .value?);
+    def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
+    reduce (inputs | fromjson?) as $x ({e: [], hits: [], title: null, ctitle: null, sid: null};
+      .sid = (.sid // $x.sessionId)
+      | if $x.type == "ai-title" then .title = $x.aiTitle
+        elif $x.type == "custom-title" then .ctitle = ($x.customTitle // $x.title)
+        elif $x.type == "assistant" and $x.isApiErrorMessage == true and $x.error == "rate_limit" then .hits += [$x.timestamp]
+        elif $x.type == "assistant" and $x.message.usage != null
+             and ($x.message.model // "") != "" and $x.message.model != "<synthetic>" then
+          .e += [{k: "\($x.message.id):\($x.requestId // "")", ts: $x.timestamp, m: $x.message.model,
+                  p: ($x.cwd // ""), u: $x.message.usage}]
+        else . end)
+    | (.sid // $fsid) as $sid
+    | { sig: $sig, sid: $sid, title: (.ctitle // .title),
+        hits: [ .hits[] | epoch ],
+        entries: (.e | map({key: .k, value: .}) | from_entries | [ .[] ]          # dedupe, last wins
+          | map(. as $x | rate($x.m) as $r | ($x.ts | epoch) as $t
+              | ($x.u.cache_creation.ephemeral_1h_input_tokens // 0) as $w1h
+              | ($x.u.cache_creation.ephemeral_5m_input_tokens
+                 // (($x.u.cache_creation_input_tokens // 0) - $w1h)) as $w5m
+              | { k: $x.k, t: $t, d: ($t | strflocaltime("%Y-%m-%d")), s: $sid,
+                  m: $x.m, p: $x.p, priced: ($r != null),
+                  c: (if $r == null then 0 else
+                        ( ($x.u.input_tokens // 0) * $r.input
+                        + ($x.u.output_tokens // 0) * $r.output
+                        + $w5m * $r.input * 1.25
+                        + $w1h * $r.input * 2
+                        + ($x.u.cache_read_input_tokens // 0) * $r.cache_read
+                        ) / 1000000 * (if $x.u.speed == "fast" then 2 else 1 end)
+                      end) })) }' "$f" > "$out.tmp.$$" 2>/dev/null && mv "$out.tmp.$$" "$out" || rm -f "$out.tmp.$$"
+done < <(find "$HOME/.claude/projects" -name '*.jsonl' -mtime -40 2>/dev/null)
+find "$CACHE" -name 'claude-*.json' -mtime +40 -delete 2>/dev/null
+
+key_get() { # account
+  if [ -n "${SIGNALS_TEST_KEYS:-}" ]; then cat "$SIGNALS_TEST_KEYS/$1" 2>/dev/null; return 0; fi
+  security find-generic-password -s signals -a "$1" -w 2>/dev/null || true
+}
+
+# ── Plan: the usage Claude Code has already saved on this Mac ────────────────
+# Claude Code keeps its latest plan usage in ~/.claude.json, and hands exact
+# figures to its terminal status line (signals-statusline saves those). Signals
+# only reads these local files: it never uses your Claude login or calls
+# Anthropic. Whichever reading is newer wins.
+account='null'
+rm -f "$TB/usage.json"   # left by older versions
+if [ "$mode" = plan ]; then
+  raw='' as_of=0
+  if [ -n "${SIGNALS_USAGE_FIXTURE:-}" ]; then
+    raw=$(cat "$SIGNALS_USAGE_FIXTURE"); as_of=$now
+  else
+    saved=$(jq -c '.cachedUsageUtilization | select(.utilization) | {u: .utilization, t: ((.fetchedAtMs // 0) / 1000 | floor)}' "$HOME/.claude.json" 2>/dev/null)
+    if [ -n "$saved" ]; then raw=$(jq -c .u <<<"$saved"); as_of=$(jq -r .t <<<"$saved"); fi
+  fi
+  if [ -n "$raw" ]; then
+    account=$(jq -c --argjson asof "$as_of" --argjson now "$now" '
+      def iso: if . == null then null else sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601 end;
+      def lim($k): (.limits // []) | map(select(.kind == $k)) | first;
+      def minor: if . == null then null else (.amount_minor // 0) / pow(10; .exponent // 2) end;
+      (.five_hour.resets_at | iso) as $r5 | (.seven_day.resets_at | iso) as $r7
+      # A window that has reset since the reading starts again from zero.
+      | { session: (if $r5 != null and $r5 <= $now then {pct: 0, resets_at: null, active: false, severity: "normal"}
+                    else { pct: (.five_hour.utilization // lim("session").percent // 0), resets_at: $r5,
+                           active: (lim("session").is_active // ($r5 != null)),
+                           severity: (lim("session").severity // "normal") } end),
+          weekly:  (if $r7 != null and $r7 <= $now then null
+                    else { pct: (.seven_day.utilization // lim("weekly_all").percent // 0), resets_at: $r7,
+                           severity: (lim("weekly_all").severity // "normal") } end),
+          locked: (if $r5 != null and $r5 <= $now then null else (.five_hour.locked_reason // .seven_day.locked_reason) end),
+          credits: { enabled: (.extra_usage.is_enabled // false),
+                     used: (if .spend.enabled then (.spend.used | minor) else (.extra_usage.used_credits // 0) end),
+                     limit: (.extra_usage.monthly_limit // (.spend.limit | minor)),
+                     reason: (.extra_usage.disabled_reason // .spend.disabled_reason),
+                     ever: (.extra_usage.credits_ever_enabled // false) },
+          breakdown: [ (.seven_day_breakdown.rows // [])[] | select(.percent > 0) | {name: .display_name, pct: .percent} ],
+          source: "claude", as_of: $asof }' <<<"$raw" 2>/dev/null)
+    [ -z "$account" ] && account='null'
+  fi
+fi
+# Exact limits the terminal status line saw, when they're newer. Credits and
+# the per-product split only come from Claude Code's saved usage, so they're kept.
+if [ "$mode" = plan ] && [ -f "$TB/limits.json" ]; then
+  sl=$(jq -c --argjson now "$now" '
+    if (.five_hour.resets_at // 0) > $now or (.seven_day.resets_at // 0) > $now then
+    { session: (if (.five_hour.resets_at // 0) > $now then {pct: .five_hour.used_percentage, resets_at: .five_hour.resets_at, active: true, severity: "normal"}
+                else {pct: 0, resets_at: null, active: false, severity: "normal"} end),
+      weekly:  (if (.seven_day.resets_at // 0) > $now then {pct: .seven_day.used_percentage, resets_at: .seven_day.resets_at, severity: "normal"} else null end),
+      locked: null, credits: {enabled: false, used: 0, limit: null}, breakdown: [],
+      source: "statusline", as_of: .captured_at }
+    else null end' "$TB/limits.json" 2>/dev/null)
+  if [ -n "$sl" ] && [ "$sl" != null ]; then
+    account=$(jq -nc --argjson a "$account" --argjson s "$sl" '
+      if $a == null then $s
+      elif ($s.as_of // 0) > ($a.as_of // 0) then $s + {credits: $a.credits, breakdown: $a.breakdown}
+      else $a end')
+  fi
+fi
+# Pace: keep the last few session readings to estimate when the limit is hit.
+if [ "$account" != null ]; then
+  hist="$TB/usage-history.json"
+  jq -c --argjson a "$account" --argjson now "$now" '
+    ((. // []) + [{t: $a.as_of, pct: $a.session.pct, resets_at: $a.session.resets_at}])
+    | unique_by(.t) | map(select(.t > $now - 7200)) | .[-24:]' "$hist" 2>/dev/null > "$hist.tmp.$$" \
+    || jq -nc --argjson a "$account" '[{t: $a.as_of, pct: $a.session.pct, resets_at: $a.session.resets_at}]' > "$hist.tmp.$$"
+  mv "$hist.tmp.$$" "$hist"
+  account=$(jq -c --slurpfile h "$hist" --argjson now "$now" '
+    . as $a
+    | ($h[0] | map(select(.resets_at == $a.session.resets_at and .t >= $now - 3600)) | sort_by(.t)) as $r
+    | if ($r | length) >= 2 and $a.session.active and ($a.session.pct < 100) then
+        (($r[-1].pct - $r[0].pct) / (($r[-1].t - $r[0].t) | if . <= 0 then 1 else . end)) as $rate
+        | if $rate > 0 then ($r[-1].t + (100 - $r[-1].pct) / $rate | floor) as $eta
+            | . + {eta: (if $a.session.resets_at == null or $eta < $a.session.resets_at then $eta else null end)}
+          else . end
+      else . end' <<<"$account")
+fi
+
+# ── API modes: billed spend (cost report), refreshed at most every 10 minutes ─
+api_cost='null'
+if [ "$mode" = anthropic ] || [ "$mode" = openai ]; then
+  provider="$mode"
+  admin_key=$(key_get "$provider-admin")
+  cached="$TB/api-cost-$provider.json"
+  month_start_utc=$(date -u -j -f "%Y-%m-%d %H:%M:%S" "$month-01 00:00:00" +%s)
+  today_start=$(date -u -j -f "%Y-%m-%d %H:%M:%S" "$(date -u +%Y-%m-%d) 00:00:00" +%s)
+  if [ -z "$admin_key" ] && [ -z "${SIGNALS_COST_FIXTURE:-}" ]; then
+    api_cost='{"error": "No admin key. Run: signals usage anthropic"}'
+  elif [ -z "${SIGNALS_COST_FIXTURE:-}" ] && [ -f "$cached" ] && [ $((now - $(stat -f %m "$cached"))) -lt 600 ] && [ "$(jq -r .month "$cached" 2>/dev/null)" = "$month" ]; then
+    api_cost=$(cat "$cached")
+  else
+    pages='[]' page='' ok=1
+    for _ in 1 2 3 4 5; do
+      if [ -n "${SIGNALS_COST_FIXTURE:-}" ]; then
+        resp=$(cat "$SIGNALS_COST_FIXTURE")
+      elif [ "$provider" = anthropic ]; then
+        # Keys go to curl on stdin, so they never appear in the process list.
+        resp=$(printf 'header = "x-api-key: %s"\n' "$admin_key" | curl -sS -m 15 -K - \
+                 -H "anthropic-version: 2023-06-01" -H "User-Agent: signals" \
+                 "https://api.anthropic.com/v1/organizations/cost_report?starting_at=${month}-01T00:00:00Z&bucket_width=1d&limit=31${page:+&page=$page}" 2>/dev/null) || { ok=0; break; }
+      else
+        resp=$(printf 'header = "Authorization: Bearer %s"\n' "$admin_key" | curl -sS -m 15 -K - \
+                 -H "User-Agent: signals" \
+                 "https://api.openai.com/v1/organization/costs?start_time=${month_start_utc}&bucket_width=1d&limit=31${page:+&page=$page}" 2>/dev/null) || { ok=0; break; }
+      fi
+      jq -e '.data | type == "array"' <<<"$resp" >/dev/null 2>&1 || { ok=0; break; }
+      pages=$(jq -c --argjson r "$resp" '. + [$r]' <<<"$pages")
+      [ "$(jq -r '.has_more' <<<"$resp")" = "true" ] || break
+      page=$(jq -r '.next_page // empty' <<<"$resp"); [ -z "$page" ] && break
+    done
+    if [ "$ok" = 1 ]; then
+      # Anthropic: amount is a string in cents, buckets start at RFC 3339 times.
+      # OpenAI: amount.value is in dollars, buckets start at Unix seconds.
+      api_cost=$(jq -c --arg month "$month" --arg p "$provider" --argjson today "$today_start" '
+        def r2: . * 100 | round / 100;
+        def start: if (.start_time | type) == "number" then .start_time
+                   else (.starting_at // "1970-01-01T00:00:00Z" | sub("\\.[0-9]+"; "") | fromdateiso8601) end;
+        def dollars: if (.amount | type) == "object" then (.amount.value // 0 | tonumber)
+                     else ((.amount // "0") | tonumber / 100) end;
+        [ .[].data[] ] as $b
+        | { provider: $p, month: $month,
+            total: ([ $b[].results[]? | dollars ] | add // 0 | r2),
+            today: ([ $b[] | select(start >= $today) | .results[]? | dollars ] | add // 0 | r2) }' <<<"$pages")
+      [ -z "${SIGNALS_COST_FIXTURE:-}" ] && printf '%s\n' "$api_cost" > "$cached"
+    elif [ -f "$cached" ]; then
+      api_cost=$(jq -c '. + {stale: true}' "$cached")
+    else
+      api_cost='{"error": "Could not read the cost report"}'
+    fi
+  fi
+fi
+
+# Live session states from the Sessions part.
+live=$(cat "${SIGNALS_HOME:-$HOME/.signals}"/sessions/claude-*.json 2>/dev/null | jq -sc 'map({(.session_id): .status}) | add // {}' 2>/dev/null)
+[ -z "$live" ] && live='{}'
+
+# ── Codex: the plan limits Codex saves in its own session logs ────────────────
+# Each Codex turn logs a token_count event with your ChatGPT plan's limits (a
+# 5-hour and a weekly window). The newest log from the last week that has one
+# is read; nothing else from your Codex sessions is used.
+codex='null'
+CX="${CODEX_HOME:-$HOME/.codex}/sessions"
+warn_at=$(jq -r '(.warn // 0.8) * 100' "$CONFIG" 2>/dev/null || echo 80)
+if [ -d "$CX" ]; then
+  line=''
+  while IFS= read -r f; do
+    line=$(grep '"rate_limits"' "$f" 2>/dev/null | tail -1)
+    [ -n "$line" ] && break
+  done < <(find "$CX" -name 'rollout-*.jsonl' -mtime -8 -exec stat -f '%m %N' {} + 2>/dev/null | sort -rn | cut -d' ' -f2-)
+  if [ -n "$line" ]; then
+    codex=$(jq -c --argjson now "$now" --argjson warn "$warn_at" '
+      def title: (.[0:1] | ascii_upcase) + .[1:];
+      ((.timestamp // "" | sub("\\.[0-9]+"; "") | fromdateiso8601?) // $now) as $t
+      | .payload.rate_limits as $r
+      | { plan: (if $r.plan_type then "ChatGPT \($r.plan_type | title)" else "ChatGPT" end),
+          session: (if ($r.primary.resets_at // 0) > $now then {pct: ($r.primary.used_percent // 0), resets_at: $r.primary.resets_at, active: true}
+                    else {pct: 0, resets_at: null, active: false} end),
+          weekly: (if ($r.secondary.resets_at // 0) > $now then {pct: ($r.secondary.used_percent // 0), resets_at: $r.secondary.resets_at} else null end),
+          as_of: $t }
+      | ([.session.pct, (.weekly.pct // 0)] | max) as $top
+      | . + {status: (if $top >= 100 then "blocked" elif $top >= $warn then "warn" else "ok" end)}' <<<"$line" 2>/dev/null)
+    [ -z "$codex" ] && codex='null'
+  fi
+fi
+
+# ── Aggregate ─────────────────────────────────────────────────────────────────
+pass_until=$(cat "$TB/pass" 2>/dev/null || echo 0)
+state=$(
+  { cat "$CACHE"/claude-*.json 2>/dev/null || true; } | jq -s \
+    --arg month "$month" --arg today "$today" --slurpfile cfg "$CONFIG" --arg mode "$mode" \
+    --argjson now "$now" --argjson pass "${pass_until:-0}" --argjson api "$api_cost" \
+    --argjson account "$account" --argjson live "$live" --argjson codex "$codex" \
+    --argjson mstart "$month_start" --argjson mdays "$days_in_month" '
+    def r2: . * 100 | round / 100;
+    . as $files
+    | ([ $files[].entries[]? ] | unique_by(.k)) as $all
+    | ([ $files[] | select(.title) | {(.sid): .title} ] | add // {}) as $titles
+    | ($all | map(select(.d | startswith($month)))) as $e
+    | ($cfg[0].budget) as $budget
+    | ($cfg[0].warn // 0.8) as $warn
+    | ($e | map(.c) | add // 0) as $local_total
+    | ($e | map(select(.d == $today) | .c) | add // 0) as $local_today
+    | (if $mode == "anthropic" or $mode == "openai" then $api.total else $local_total end) as $spend
+    | (if $mode == "anthropic" or $mode == "openai" then $api.today else $local_today end) as $spend_today
+
+    # Projection: month-to-date pace, extended to the end of the month.
+    | ((($now - $mstart) / 86400) | if . < 0.5 then 0.5 else . end) as $elapsed
+    | (if $spend == null then null else $spend / $elapsed * $mdays end) as $projected
+    | (if $spend != null and $budget and $budget > 0 and $projected > $budget and $spend < $budget
+       then ($mstart + $budget / ($spend / $elapsed) * 86400) else null end) as $over_at
+
+    # Spike: today against the average of the previous 7 days with usage.
+    | ([ $all[] | select(.t >= $now - 8 * 86400 and .d != $today) ] | group_by(.d) | map(map(.c) | add)) as $days
+    | (if ($days | length) > 0 then ($days | add) / ($days | length) else null end) as $usual
+    | (if $usual and $usual > 0 and $local_today >= 1 and $local_today / $usual >= 3
+       then ($local_today / $usual | floor) else null end) as $spike
+
+    # Sessions today, with titles, live state and an "expensive" flag.
+    | ([ $all[] | select(.t >= $now - 30 * 86400) ] | group_by(.s) | map(map(.c) | add) | map(select(. > 0.01))) as $past
+    | (if ($past | length) > 0 then ($past | add) / ($past | length) else null end) as $avg_session
+    | ([ $all[] | select(.d == $today) ] | group_by(.s)
+       | map({ sid: .[0].s, cost: (map(.c) | add | r2), last: (map(.t) | max),
+               cwd: (map(select(.p != "")) | last | .p // ""),
+               title: ($titles[.[0].s] // null) })
+       | map(. + { state: ($live[.sid] // (if $now - .last < 90 then "working" else "done" end)),
+                   times: (if $avg_session and $avg_session > 0 and .cost / $avg_session >= 2
+                           then (.cost / $avg_session * 10 | floor / 10) else null end) })
+       | sort_by(-.last) | .[0:6]) as $sessions
+
+    # Plan state, from account usage.
+    | (if $mode != "plan" or $account == null then null
+       else ($account.session.pct >= 100 or ($account.weekly.pct // 0) >= 100 or $account.locked != null) as $blocked
+         | (if $blocked and $account.credits.enabled then "credits"
+            elif $blocked then "blocked"
+            elif ([$account.session.pct, ($account.weekly.pct // 0)] | max) >= $warn * 100
+                 or $account.session.severity != "normal" or ($account.weekly.severity // "normal") != "normal" then "warn"
+            else "ok" end) end) as $plan_state
+
+    | { month: $month, mode: $mode, updated: $now,
+        plan: ($cfg[0].plan),
+        account: $account,
+        codex: $codex,
+        limit_hits_week: ([ $files[].hits[]? ] | unique | map(select(. >= $now - 7 * 86400)) | length),
+        spend: (if $spend == null then null else ($spend | r2) end),
+        today_spend: (if $spend_today == null then null else ($spend_today | r2) end),
+        live_since: (if ($mode == "anthropic" or $mode == "openai") and $api.today != null and $local_today - $api.today >= 0.01
+                     then ($local_today - $api.today | r2) else null end),
+        projected: (if $projected == null then null else ($projected | r2) end),
+        over_at: $over_at,
+        spike: $spike,
+        sessions: $sessions,
+        budget: $budget, warn: $warn,
+        pct: (if $budget and $budget > 0 and $spend != null then ($spend / $budget * 100 | floor) else null end),
+        status: (if $mode == "plan" then ($plan_state // "unknown")
+                 elif $mode == "none" or $spend == null or ($budget | not) or $budget <= 0 then "nobudget"
+                 elif $spend >= $budget then "over"
+                 elif $spend >= $budget * $warn then "warn" else "ok" end),
+        pass_until: (if $pass > $now then $pass else null end),
+        api: $api,
+        total: ($local_total | r2), today: ($local_today | r2),
+        unpriced: ($e | map(select(.priced | not) | .m) | unique) }'
+)
+[ -z "$state" ] && exit 0
+printf '%s\n' "$state" > "$TB/state.json.tmp.$$" && mv "$TB/state.json.tmp.$$" "$TB/state.json"
+
+notify=''
+# ── Notify once per threshold (per window for plans, per month for budgets) ──
+status=$(jq -r '.status' <<<"$state")
+if [ -z "${SIGNALS_NO_NOTIFY:-}" ]; then
+  key='' msg='' title=''
+  if [ "$mode" = plan ]; then
+    case "$status" in warn|blocked|credits)
+      key="$status:$(jq -r '.account.session.resets_at // .account.weekly.resets_at' <<<"$state")"
+      msg=$(jq -r '
+        def at: strflocaltime("%-I:%M%p") | ascii_downcase;
+        if .status == "credits" then "Over your plan limit. You are now using usage credits."
+        elif .status == "blocked" then "Usage limit reached. Back at \((.account.session.resets_at // .account.weekly.resets_at) | at)."
+        else "\([.account.session.pct, (.account.weekly.pct // 0)] | max | floor)% of your limit used." end' <<<"$state")
+      title="⚠️ Signals: heads up"
+      [ "$status" = blocked ] && title="⛔️ Signals: limit reached"
+      [ "$status" = credits ] && title="💳 Signals: on usage credits" ;;
+    esac
+  else
+    case "$status" in warn|over)
+      key="$month:$status"
+      msg=$(jq -r 'if .status == "over"
+                   then "Budget reached: $\(.spend) of $\(.budget). New prompts are paused. Run: signals pass 1h"
+                   else "\(.pct)% of your $\(.budget) budget used ($\(.spend) this month)" end' <<<"$state")
+      title=$([ "$status" = over ] && echo "⛔️ Signals: gate down" || echo "⚠️ Signals: heads up") ;;
+    esac
+  fi
+  if [ -n "$key" ]; then
+    seen=$(cat "$TB/notified" 2>/dev/null || true)
+    if [ "$seen" != "$key" ] && [ "$seen" != "$month:over" ]; then
+      # The menu bar app posts it as its own notification; otherwise AppleScript.
+      if [ -n "${SIGNALS_APP:-}" ]; then notify=$(jq -nc --arg t "$title" --arg b "$msg" '{title: $t, body: $b}')
+      else osascript -e "display notification \"$msg\" with title \"$title\" sound name \"Submarine\"" >/dev/null 2>&1 || true; fi
+      echo "$key" > "$TB/notified"
+    fi
+  fi
+fi
+
+# Codex limits, on their own key so they don't hide Claude's notices.
+if [ -z "${SIGNALS_NO_NOTIFY:-}" ] && [ -z "$notify" ] && [ "$codex" != null ]; then
+  cstatus=$(jq -r .status <<<"$codex")
+  case "$cstatus" in warn|blocked)
+    ckey="codex:$cstatus:$(jq -r '.session.resets_at // .weekly.resets_at' <<<"$codex")"
+    if [ "$(cat "$TB/notified-codex" 2>/dev/null)" != "$ckey" ]; then
+      title=$([ "$cstatus" = blocked ] && echo "⛔️ Signals: Codex limit reached" || echo "⚠️ Signals: Codex heads up")
+      msg=$(jq -r 'def at: strflocaltime("%-I:%M%p") | ascii_downcase;
+                   if .status == "blocked" then "Codex usage limit reached. Back at \((.session.resets_at // .weekly.resets_at) | at)."
+                   else "\([.session.pct, (.weekly.pct // 0)] | max | floor)% of your Codex limit used." end' <<<"$codex")
+      if [ -n "${SIGNALS_APP:-}" ]; then notify=$(jq -nc --arg t "$title" --arg b "$msg" '{title: $t, body: $b}')
+      else osascript -e "display notification \"$msg\" with title \"$title\" sound name \"Submarine\"" >/dev/null 2>&1 || true; fi
+      echo "$ckey" > "$TB/notified-codex"
+    fi ;;
+  esac
+fi
+
+[ -n "$notify" ] && state=$(jq -c --argjson n "$notify" '. + {notify: $n}' <<<"$state")
+printf '%s\n' "$state"

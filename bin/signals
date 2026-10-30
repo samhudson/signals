@@ -1,0 +1,661 @@
+#!/bin/bash
+# Signals: see your AI agents and what they use, from the macOS menu bar.
+#   Sessions  one light per agent session: 🔴 working · 🟡 needs you · 🟢 done
+#   Usage     your Claude plan limits, or API spend against a budget, with a
+#             gate that holds new prompts once the budget is spent (optional)
+set -euo pipefail
+
+VERSION="1.0.0"
+SELF="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+LIBEXEC="$(cd "$SELF/../libexec" && pwd)"
+SH="${SIGNALS_HOME:-$HOME/.signals}"
+STATE_DIR="$SH/sessions"
+CREATED="$SH/created"
+TB="$SH/usage"
+CONFIG="$TB/config.json"
+HOOK="$LIBEXEC/signals-hook"
+METER="$LIBEXEC/signals-meter"
+STATUSLINE="$LIBEXEC/signals-statusline"
+APP="$LIBEXEC/Signals.app"
+LOGIN_LABEL="com.risestack.signals"
+LOGIN_PLIST="$HOME/Library/LaunchAgents/$LOGIN_LABEL.plist"
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+AGENTS=(claude codex gemini cursor copilot)
+# Our hook commands, plus those of the tools Signals replaces.
+OURS='signals-hook|trafficlight-hook|agentlights-hook|session-status\.sh|tollbooth-gate'
+
+# Prefer the stable Homebrew opt path so upgrades don't break hook commands.
+if command -v brew >/dev/null 2>&1; then
+  OPT="$(brew --prefix)/opt/signals/libexec"
+  [ -x "$OPT/signals-hook" ] && HOOK="$OPT/signals-hook" && STATUSLINE="$OPT/signals-statusline" && APP="$OPT/Signals.app"
+fi
+
+info() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
+die()  { echo "$*" >&2; exit 1; }
+
+# Tests (and the app, when it calls the CLI) skip launching the app.
+test_mode() { [ -n "${SIGNALS_NO_APP:-}" ]; }
+has_screen() { [ -z "${SSH_CONNECTION:-}" ] && [ "$(launchctl managername 2>/dev/null)" = Aqua ]; }
+app_running() { pgrep -xq Signals; }
+# Nudge the menu bar app to re-read usage (it also refreshes every minute).
+refresh() { test_mode || ! app_running || open -g "signals://refresh" 2>/dev/null || true; }
+has_flag() { local f="$1" a; shift; for a in "$@"; do [ "$a" = "$f" ] && return 0; done; return 1; }
+
+# ══ Sessions ═════════════════════════════════════════════════════════════════
+
+# Guarded so a removed install exits 0 silently instead of a hook error.
+hook_cmd() { echo "[ ! -x '$HOOK' ] || '$HOOK' $1 $2"; }
+
+config_file() {
+  case "$1" in
+    claude)  echo "$CLAUDE_SETTINGS" ;;
+    codex)   echo "$HOME/.codex/hooks.json" ;;
+    gemini)  echo "$HOME/.gemini/settings.json" ;;
+    cursor)  echo "$HOME/.cursor/hooks.json" ;;
+    copilot) echo "$HOME/.copilot/hooks/signals.json" ;;
+  esac
+}
+events() {
+  case "$1" in
+    claude)  echo "SessionStart UserPromptSubmit PostToolUse PermissionRequest Notification Stop StopFailure SessionEnd" ;;
+    codex)   echo "SessionStart UserPromptSubmit PostToolUse PermissionRequest Stop Interrupt SessionEnd" ;;
+    gemini)  echo "SessionStart BeforeAgent AfterTool Notification AfterAgent SessionEnd" ;;
+    cursor)  echo "sessionStart beforeSubmitPrompt postToolUse stop sessionEnd" ;;
+    copilot) echo "sessionStart userPromptSubmitted postToolUse agentStop sessionEnd" ;;
+  esac
+}
+display() {
+  case "$1" in
+    claude) echo "Claude Code" ;; codex) echo "Codex" ;; gemini) echo "Gemini CLI" ;;
+    cursor) echo "Cursor" ;; copilot) echo "Copilot (VS Code)" ;;
+  esac
+}
+detected() {
+  case "$1" in
+    claude)  [ -d "$HOME/.claude" ] || command -v claude >/dev/null ;;
+    codex)   [ -d "$HOME/.codex" ] || command -v codex >/dev/null ;;
+    gemini)  [ -d "$HOME/.gemini" ] || command -v gemini >/dev/null ;;
+    cursor)  [ -d "$HOME/.cursor" ] || [ -d /Applications/Cursor.app ] ;;
+    copilot) [ -d "$HOME/.copilot" ] || ls -d "$HOME"/.vscode/extensions/github.copilot* >/dev/null 2>&1 ;;
+  esac
+}
+
+# Each agent's own folder. If Signals creates it (agent not installed yet),
+# a marker records that, so turning the agent off again leaves nothing behind.
+agent_root() {
+  case "$1" in
+    claude) echo "$HOME/.claude" ;; codex) echo "$HOME/.codex" ;; gemini) echo "$HOME/.gemini" ;;
+    cursor) echo "$HOME/.cursor" ;; copilot) echo "$HOME/.copilot" ;;
+  esac
+}
+
+# Remove what Signals created for an agent, but only if nothing else has
+# been put there since: other settings or other hooks keep the folder.
+cleanup_created() {
+  local agent="$1" root file
+  [ -f "$CREATED/$agent" ] || return 0
+  root=$(agent_root "$agent"); file=$(config_file "$agent")
+  if [ -f "$file" ] && ! jq -e 'del(.hooks, .version) | length == 0' "$file" >/dev/null 2>&1; then rm -f "$CREATED/$agent"; return 0; fi
+  if [ -f "$file" ] && jq -e '(.hooks // {}) | length > 0' "$file" >/dev/null 2>&1; then rm -f "$CREATED/$agent"; return 0; fi
+  rm -f "$file" "$file".bak.*
+  find "$root" -depth -type d -empty -delete 2>/dev/null
+  rm -f "$CREATED/$agent"
+  [ -e "$root" ] || info "$(display "$agent"): removed ${root/#$HOME/~} (Signals created it)"
+}
+
+# Claude, Codex and Gemini share a format: hooks.<Event> = [{hooks:[{type,command,timeout}]}]
+strip_nested() {
+  jq --arg re "$OURS" '
+    if .hooks then
+      .hooks |= with_entries(
+        .value |= (map(.hooks |= map(select((.command // "") | test($re) | not)))
+                   | map(select(.hooks | length > 0))))
+      | .hooks |= with_entries(select(.value | length > 0))
+    else . end'
+}
+# Cursor: {version:1, hooks:{event:[{command}]}}
+strip_flat() {
+  jq --arg re "$OURS" '
+    if .hooks then
+      .hooks |= with_entries(.value |= map(select((.command // "") | test($re) | not)))
+      | .hooks |= with_entries(select(.value | length > 0))
+    else . end'
+}
+
+install_agent() {
+  local agent="$1" file tmp ev cmd timeout
+  file="$(config_file "$agent")"
+  [ -e "$(agent_root "$agent")" ] || { mkdir -p "$CREATED"; touch "$CREATED/$agent"; }
+  mkdir -p "$(dirname "$file")"
+  tmp=$(mktemp)
+  case "$agent" in
+    claude|codex|gemini)
+      # Claude's prompt hook may run the budget gate, which can refresh usage.
+      timeout=5; [ "$agent" = claude ] && timeout=10; [ "$agent" = gemini ] && timeout=5000   # Gemini: ms
+      [ -f "$file" ] || echo '{}' > "$file"
+      cp "$file" "$file.bak.signals"
+      strip_nested < "$file" > "$tmp"
+      for ev in $(events "$agent"); do
+        cmd="$(hook_cmd "$agent" "$ev")"
+        jq --arg ev "$ev" --arg c "$cmd" --argjson t "$timeout" \
+          '.hooks[$ev] = ((.hooks[$ev] // []) + [{hooks:[{type:"command", command:$c, timeout:$t}]}])' \
+          "$tmp" > "$tmp.2" && mv "$tmp.2" "$tmp"
+      done ;;
+    cursor)
+      [ -f "$file" ] || echo '{"version":1,"hooks":{}}' > "$file"
+      cp "$file" "$file.bak.signals"
+      strip_flat < "$file" | jq '.version //= 1' > "$tmp"
+      for ev in $(events "$agent"); do
+        cmd="$(hook_cmd "$agent" "$ev")"
+        jq --arg ev "$ev" --arg c "$cmd" '.hooks[$ev] = ((.hooks[$ev] // []) + [{command:$c}])' \
+          "$tmp" > "$tmp.2" && mv "$tmp.2" "$tmp"
+      done ;;
+    copilot)
+      # Our own file in ~/.copilot/hooks/, so uninstall is just deleting it.
+      echo '{"version":1,"hooks":{}}' > "$tmp"
+      for ev in $(events "$agent"); do
+        cmd="$(hook_cmd "$agent" "$ev")"
+        jq --arg ev "$ev" --arg c "$cmd" '.hooks[$ev] = [{type:"command", command:$c, timeoutSec:5}]' \
+          "$tmp" > "$tmp.2" && mv "$tmp.2" "$tmp"
+      done ;;
+  esac
+  mv "$tmp" "$file"
+  info "$(display "$agent"): hooks added to ${file/#$HOME/~}"
+}
+
+uninstall_agent() {
+  local agent="$1" file tmp
+  file="$(config_file "$agent")"
+  [ -f "$file" ] || { cleanup_created "$agent"; return 0; }
+  case "$agent" in
+    copilot) rm -f "$file" ;;
+    cursor)  tmp=$(mktemp); strip_flat < "$file" > "$tmp" && mv "$tmp" "$file" ;;
+    *)       tmp=$(mktemp); strip_nested < "$file" > "$tmp" && mv "$tmp" "$file" ;;
+  esac
+  info "$(display "$agent"): hooks removed"
+  cleanup_created "$agent"
+}
+
+agent_installed() {
+  local file; file="$(config_file "$1")"
+  [ -f "$file" ] && jq -e '[.. | objects | .command? // empty | strings | select(test("signals-hook"))] | length > 0' "$file" >/dev/null 2>&1
+}
+
+# Agents to act on: explicit args, or every detected agent. Flags are skipped.
+pick_agents() {
+  local a named=0
+  for a in "$@"; do
+    case "$a" in --*) continue ;; esac
+    named=1
+    case " ${AGENTS[*]} " in *" $a "*) echo "$a" ;; *) die "unknown agent: $a (choose from: ${AGENTS[*]})" ;; esac
+  done
+  if [ $named = 0 ]; then for a in "${AGENTS[@]}"; do if detected "$a"; then echo "$a"; fi; done; fi
+}
+
+# ══ Usage ════════════════════════════════════════════════════════════════════
+
+ensure_config() { mkdir -p "$TB"; [ -f "$CONFIG" ] || echo '{"budget": null, "warn": 0.8}' > "$CONFIG"; }
+set_config() { local tmp; tmp=$(mktemp); jq "$@" "$CONFIG" > "$tmp" && mv "$tmp" "$CONFIG"; }
+remeter() { SIGNALS_NO_NOTIFY=1 "$METER" >/dev/null 2>&1 || true; refresh; }
+
+# Keys: macOS Keychain (service "signals"); a folder in tests.
+key_put() {
+  if [ -n "${SIGNALS_TEST_KEYS:-}" ]; then mkdir -p "$SIGNALS_TEST_KEYS"; printf '%s' "$2" > "$SIGNALS_TEST_KEYS/$1"; return; fi
+  security add-generic-password -U -s signals -a "$1" -l "Signals: $1 key" -w "$2" >/dev/null
+}
+key_get() {
+  if [ -n "${SIGNALS_TEST_KEYS:-}" ]; then cat "$SIGNALS_TEST_KEYS/$1" 2>/dev/null; return 0; fi
+  security find-generic-password -s signals -a "$1" -w 2>/dev/null || true
+}
+key_del() {
+  if [ -n "${SIGNALS_TEST_KEYS:-}" ]; then rm -f "$SIGNALS_TEST_KEYS/$1"; return; fi
+  security delete-generic-password -s signals -a "$1" >/dev/null 2>&1 || true
+}
+
+# Prompts: text in a terminal (--text, or no screen, e.g. over SSH), macOS
+# dialogs elsewhere. Prompts go to stderr, so this checks stdin and stderr:
+# stdout is captured by $(...) when an answer is read.
+text_ui() {
+  case "${SIGNALS_UI:-}" in text) return 0 ;; mac) return 1 ;; esac
+  [ -t 0 ] && [ -t 2 ]
+}
+choose() { # prompt, options... → prints the chosen option
+  local prompt="$1"; shift
+  if text_ui; then
+    local i=1 o n
+    echo "$prompt" >&2
+    for o in "$@"; do printf '  %d) %s\n' "$i" "$o" >&2; i=$((i + 1)); done
+    read -rp "> " n || return 1
+    [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le $# ] || return 1
+    eval "echo \"\${$n}\""
+  else
+    local list; list=$(printf '"%s",' "$@"); list="{${list%,}}"
+    local r; r=$(osascript -e "choose from list $list with prompt \"$prompt\" with title \"Signals\" default items {\"$1\"}" 2>/dev/null) || return 1
+    [ -n "$r" ] && [ "$r" != false ] || return 1
+    echo "$r"
+  fi
+}
+ask_secret() { # prompt
+  local v
+  if text_ui; then read -rsp "$1 (hidden): " v || return 1; echo >&2
+  else v=$(osascript -e "text returned of (display dialog \"$1\" default answer \"\" with hidden answer with title \"Signals\")" 2>/dev/null) || return 1; fi
+  printf '%s' "$v" | tr -d '[:space:]'
+}
+ask_text() { # prompt, default
+  local v
+  if text_ui; then read -rp "$1 [${2:-none}]: " v || return 1; echo "${v:-$2}"
+  else osascript -e "text returned of (display dialog \"$1\" default answer \"$2\" with title \"Signals\")" 2>/dev/null || return 1; fi
+}
+
+# Check a key can read the provider's cost report. Prints the HTTP status.
+verify_key() { # provider, key
+  [ -n "${SIGNALS_SKIP_VERIFY:-}" ] && { echo 200; return; }
+  local start; start=$(date -u -j -f "%Y-%m-%d %H:%M:%S" "$(date -u +%Y-%m-01) 00:00:00" +%s)
+  case "$1" in
+    anthropic) printf 'header = "x-api-key: %s"\n' "$2" | curl -sS -m 15 -o /dev/null -w '%{http_code}' -K - \
+                 -H "anthropic-version: 2023-06-01" -H "User-Agent: signals" \
+                 "https://api.anthropic.com/v1/organizations/cost_report?starting_at=$(date -u +%Y-%m-01)T00:00:00Z&limit=1" 2>/dev/null || echo 000 ;;
+    openai)    printf 'header = "Authorization: Bearer %s"\n' "$2" | curl -sS -m 15 -o /dev/null -w '%{http_code}' -K - \
+                 -H "User-Agent: signals" \
+                 "https://api.openai.com/v1/organization/costs?start_time=$start&limit=1" 2>/dev/null || echo 000 ;;
+  esac
+}
+
+# The Claude plan this Mac is signed in with, from Claude Code's login: never
+# chosen by hand, and re-read on every refresh (see libexec/signals-plan).
+detected_plan() { "$LIBEXEC/signals-plan"; }
+
+usage_plan() {
+  local plan
+  [ $# -eq 0 ] || die "Your plan comes from your Claude login, so there's nothing to choose: signals usage plan"
+  plan=$(detected_plan)
+  [ -n "$plan" ] || die "No Claude login found on this Mac. Sign in to Claude Code (run claude, then /login), then try again."
+  set_config --argjson p "$plan" '.mode = "plan" | .plan = $p | del(.account_usage)'
+  info "Usage: $(jq -r .label <<<"$plan"). The menu shows how much of your session and weekly limits you have used, from what Claude Code saves on this Mac."
+  info "For exact figures as you work in the terminal: signals install --statusline"
+}
+
+usage_api() { # anthropic|openai
+  local provider="$1" key code name hint
+  case "$provider" in
+    anthropic) name="Anthropic"; hint="Anthropic Admin API key (sk-ant-admin01-...)" ;;
+    openai)    name="OpenAI";    hint="OpenAI admin key (sk-admin-...)" ;;
+  esac
+  key="${SIGNALS_KEY:-}"
+  [ -z "$key" ] && [ -n "${SIGNALS_USE_SAVED_KEY:-}" ] && key=$(key_get "$provider-admin")
+  if [ -z "$key" ] && [ -n "$(key_get "$provider-admin")" ]; then
+    local use; use=$(choose "A $name admin key is already saved." "Use the saved key" "Enter a new key") || die "Setup cancelled. Nothing changed."
+    [ "$use" = "Use the saved key" ] && key=$(key_get "$provider-admin")
+  fi
+  if [ -z "$key" ]; then key=$(ask_secret "$hint") || die "Setup cancelled. Nothing changed."; fi
+  [ -z "$key" ] && die "No key entered. Nothing changed."
+  code=$(verify_key "$provider" "$key")
+  case "$code" in
+    200) ;;
+    401|403) die "$name rejected the key (HTTP $code). Cost reports need an admin key, not a regular API key." ;;
+    *) die "Couldn't reach $name (HTTP $code). Check your connection and try again." ;;
+  esac
+  key_put "$provider-admin" "$key"
+  rm -f "$TB"/api-cost-*.json
+  set_config --arg m "$provider" '.mode = $m'
+  info "Usage: $name API. Key saved to your macOS Keychain (item: signals)."
+  budget_prompt
+}
+
+usage_estimate() {
+  set_config '.mode = "estimate"'
+  info "Usage: pay as you go. What each session on this Mac costs, at API prices, from your Claude Code logs."
+  budget_prompt
+}
+
+budget_prompt() {
+  [ -n "${SIGNALS_NO_PROMPT:-}" ] && return
+  local b; b=$(ask_text "Monthly budget in USD (blank for none)" "$(jq -r '.budget // ""' "$CONFIG")") || { info "Budget unchanged."; return 0; }
+  [ -n "$b" ] && cmd_budget "$b"
+  return 0
+}
+
+# signals usage [mode] [options]: no mode shows usage; --text asks for one.
+cmd_usage() {
+  if [ "${1:-}" = "--text" ]; then export SIGNALS_UI=text; shift; local pick_mode=1; fi
+  local mode="${1:-}"; [ $# -gt 0 ] && shift
+  if [ -z "$mode" ] && [ -z "${pick_mode:-}" ]; then cmd_usage_status; return; fi
+  ensure_config
+  if [ -z "$mode" ]; then
+    local signed; signed=$(detected_plan | jq -r '" · signed in: \(.label)"' 2>/dev/null)
+    local pick; pick=$(choose "How do you pay for AI?" \
+              "Claude plan$signed" \
+              "Pay as you go: what each session on this Mac costs" \
+              "Off: just the session lights") || die "Setup cancelled. Nothing changed."
+    case "$pick" in Claude*) mode=plan ;; Pay*) mode=estimate ;; Off*) mode=off ;; *) die "Setup cancelled. Nothing changed." ;; esac
+  fi
+  case "$mode" in
+    plan)      usage_plan "$@" ;;
+    anthropic) usage_api anthropic ;;
+    openai)    usage_api openai ;;
+    estimate)  usage_estimate ;;
+    off)       set_config '.mode = "off"'; rm -f "$TB/notified" "$TB/pass"
+               info "Usage off. Signals shows session lights only. Your budget and keys are kept."; refresh; return ;;
+    *) die "usage modes: plan, anthropic, openai, estimate, off" ;;
+  esac
+  rm -f "$TB/notified"
+  remeter
+}
+
+duration() { # "30m", "1h", "2h30m", "45s", or minutes → seconds
+  local d="$1" total=0 n
+  [[ "$d" =~ ^[0-9]+$ ]] && { echo $((d * 60)); return; }
+  while [[ "$d" =~ ^([0-9]+)([hms])(.*)$ ]]; do
+    n="${BASH_REMATCH[1]}"
+    case "${BASH_REMATCH[2]}" in h) total=$((total + n * 3600)) ;; m) total=$((total + n * 60)) ;; s) total=$((total + n)) ;; esac
+    d="${BASH_REMATCH[3]}"
+  done
+  [ -z "$d" ] && [ "$total" -gt 0 ] && echo "$total" || die "invalid duration: $1 (try 30m, 1h, 2h30m)"
+}
+
+cmd_budget() {
+  ensure_config
+  local amount="${1:-}"
+  if [ "$amount" = "--ask" ]; then amount=$(ask_text "Monthly budget in USD (0 for none)" "$(jq -r '.budget // 50' "$CONFIG")") || exit 0; fi
+  if [ -z "$amount" ]; then
+    jq -r 'if .budget then "Monthly budget: $\(.budget)" else "No budget set. Try: signals budget 50" end' "$CONFIG"; return
+  fi
+  amount="${amount#\$}"
+  case "$amount" in off|none|0) amount=null ;; esac
+  [[ "$amount" = null || "$amount" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "budget must be a number of US dollars, e.g. signals budget 50"
+  set_config --argjson b "$amount" '.budget = $b'
+  rm -f "$TB/notified"
+  [ "$amount" = null ] && info "Budget off." || info "Monthly budget: \$$amount."
+  remeter
+}
+
+cmd_pass() {
+  ensure_config
+  local d="${1:-1h}" until
+  if [ "$d" = off ]; then rm -f "$TB/pass"; info "Pass cancelled."; refresh; return; fi
+  until=$(( $(date +%s) + $(duration "$d") ))
+  echo "$until" > "$TB/pass"
+  info "🎫 Pass until $(date -r "$until" '+%H:%M')."
+  refresh
+}
+
+cmd_usage_status() {
+  SIGNALS_NO_NOTIFY=1 "$METER" 2>/dev/null | jq -r '
+    def money: (. * 100 | round) as $c
+      | "$\($c / 100 | floor)." + (($c % 100) | tostring | if length == 1 then "0" + . else . end);
+    def at: strflocaltime("%-I:%M%p") | ascii_downcase;
+    if .mode == "off" or .mode == "none" then
+      "🚧 Usage is off. Turn it on: signals usage plan (or anthropic, openai, estimate)"
+    elif .mode == "plan" then
+      "🚧 \(.plan.label)",
+      (if .account == null then "  No usage reading yet. Run /usage in Claude Code, or: signals install --statusline"
+       else
+         (if .account.session.active then "  5-hour \(.account.session.pct | floor)%" + (if .account.session.resets_at then " · resets \(.account.session.resets_at | at)" else "" end)
+          else "  5-hour window not started" end),
+         (if .account.weekly then "  This week \(.account.weekly.pct | floor)% · resets \(.account.weekly.resets_at | strflocaltime("%a %-I%p") | sub("AM$"; "am") | sub("PM$"; "pm"))" else empty end),
+         (if .account.credits.enabled and .status != "credits" then "  💳 Usage credits · \(.account.credits.used | money) used"
+          elif (.account.credits.enabled | not) then "  Usage credits off" + (if .account.credits.reason == "out_of_credits" then " · out of credits" else "" end)
+          else empty end),
+         (if .status == "blocked" then "  ⛔️ Limit reached"
+          elif .status == "credits" then "  💳 On usage credits · \(.account.credits.used | money) used"
+          elif .status == "warn" then "  ⚠️ Getting close" else empty end)
+       end)
+    else
+      ({anthropic: "Anthropic API", openai: "OpenAI API", estimate: "Pay as you go"}[.mode]) as $name
+      | "🚧 \($name) · \(.month)",
+        (if .spend == null then "  \(.api.error // "No data yet")"
+         else "  \(.spend | money)" + (if .budget then " of \(.budget | money) · \(.pct)%" else " this month" end),
+              "  Today \(.today_spend | money)" end),
+        (if .projected and .status != "over" then "  On pace for \(.projected | money)" else empty end),
+        (if .status == "over" then "  ⛔️ Over budget" + (if .pass_until then " · 🎫 pass until \(.pass_until | strflocaltime("%H:%M"))" else "" end) else empty end),
+        (if (.sessions | length) > 0 and .mode != "openai" then "  Sessions today:", (.sessions[] | "    \((.title // "Session") | .[0:40])  \(.cost | money)" + (if .times then " ⚠️ \(.times)x" else "" end)) else empty end)
+    end,
+    (if .codex then
+       "🚧 Codex · \(.codex.plan)",
+       (if .codex.session.active then "  5-hour \(.codex.session.pct | floor)% · resets \(.codex.session.resets_at | at)" else "  5-hour window not started" end),
+       (if .codex.weekly then "  This week \(.codex.weekly.pct | floor)%" else empty end),
+       (if .codex.status == "blocked" then "  ⛔️ Limit reached" elif .codex.status == "warn" then "  ⚠️ Getting close" else empty end)
+     else empty end)'
+}
+
+cmd_disconnect() {
+  key_del anthropic-admin; key_del openai-admin; rm -f "$TB"/api-cost-*.json
+  info "Admin keys removed from the Keychain."
+  refresh
+}
+
+# ══ The menu bar app: our own login item ═════════════════════════════════════
+
+write_login_item() {
+  mkdir -p "$(dirname "$LOGIN_PLIST")"
+  cat > "$LOGIN_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$LOGIN_LABEL</string>
+  <key>ProgramArguments</key><array><string>$APP/Contents/MacOS/Signals</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>ProcessType</key><string>Interactive</string>
+</dict></plist>
+PLIST
+}
+start_app() {
+  local i
+  # Unload the previous login item and wait until launchd has let go of it;
+  # loading too early fails, which used to leave a second copy running.
+  launchctl bootout "gui/$(id -u)/$LOGIN_LABEL" 2>/dev/null || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do launchctl print "gui/$(id -u)/$LOGIN_LABEL" >/dev/null 2>&1 || break; sleep 0.3; done
+  pkill -x Signals 2>/dev/null || true                     # any copy started outside launchd
+  for i in 1 2 3 4 5 6 7 8 9 10; do app_running || break; sleep 0.2; done
+  launchctl bootstrap "gui/$(id -u)" "$LOGIN_PLIST" 2>/dev/null \
+    || { sleep 1; launchctl bootstrap "gui/$(id -u)" "$LOGIN_PLIST" 2>/dev/null; } || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do app_running && return 0; sleep 0.3; done
+  open -g "$APP"   # last resort if launchd couldn't start it
+}
+stop_app() {
+  launchctl bootout "gui/$(id -u)/$LOGIN_LABEL" 2>/dev/null || true
+  app_running && { osascript -e "tell application id \"$LOGIN_LABEL\" to quit" >/dev/null 2>&1 || pkill -x Signals; }
+  return 0
+}
+
+# ══ Moving over from trafficlight and tollbooth ══════════════════════════════
+# Signals replaces both. On install, their login items stop, their hooks are
+# replaced (strip_* matches their commands), and their settings, usage readings
+# and saved keys move here, so nobody has to set anything up again.
+migrate_legacy() {
+  local moved=0 old label acct v tmp
+  if ! test_mode; then
+    for label in app.trafficlight app.tollbooth sh.brew.trafficlight; do
+      if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true; moved=1; fi
+      rm -f "$HOME/Library/LaunchAgents/$label.plist"
+    done
+    pkill -x Trafficlight 2>/dev/null || true; pkill -x Tollbooth 2>/dev/null || true
+    old="$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || echo "$HOME/.swiftbar/plugins")"; old="${old/#\~/$HOME}"
+    rm -f "$old"/{trafficlight.5s.sh,agentlights.5s.sh,claude-sessions.5s.sh,tollbooth.1m.sh}
+    # Saved admin keys: copied into the "signals" item, never printed.
+    for acct in anthropic-admin openai-admin; do
+      if [ -z "$(key_get "$acct")" ] && v=$(security find-generic-password -s tollbooth -a "$acct" -w 2>/dev/null) && [ -n "$v" ]; then
+        key_put "$acct" "$v"; security delete-generic-password -s tollbooth -a "$acct" >/dev/null 2>&1 || true; moved=1
+      fi
+    done
+  fi
+  if [ -d "$HOME/.trafficlight" ]; then
+    mkdir -p "$STATE_DIR" "$CREATED"
+    cp -n "$HOME/.trafficlight/sessions/"*.json "$STATE_DIR/" 2>/dev/null || true
+    cp -n "$HOME/.trafficlight/created/"* "$CREATED/" 2>/dev/null || true
+    rm -rf "$HOME/.trafficlight"; moved=1
+  fi
+  if [ -d "$HOME/.tollbooth" ]; then
+    mkdir -p "$TB"
+    [ -f "$CONFIG" ] || cp -R "$HOME/.tollbooth/." "$TB/"
+    rm -rf "$HOME/.tollbooth"; moved=1
+  fi
+  rm -f "$HOME/.copilot/hooks/trafficlight.json" "$HOME/.copilot/hooks/agentlights.json"
+  rm -rf "$HOME/.claude/session-status" "$HOME/.agentlights"
+  # tollbooth's gate and status line in Claude Code's settings.
+  if [ -f "$CLAUDE_SETTINGS" ] && grep -q 'tollbooth-' "$CLAUDE_SETTINGS"; then
+    tmp=$(mktemp)
+    strip_nested < "$CLAUDE_SETTINGS" \
+      | jq --arg c "[ ! -x '$STATUSLINE' ] || '$STATUSLINE'" \
+           'if ((.statusLine.command // "") | test("tollbooth-statusline")) then .statusLine.command = $c else . end' > "$tmp" \
+      && mv "$tmp" "$CLAUDE_SETTINGS"
+    moved=1
+  fi
+  [ "$moved" = 1 ] && info "Moved your trafficlight and tollbooth setup into Signals"
+  return 0
+}
+
+# ══ Commands ═════════════════════════════════════════════════════════════════
+
+cmd_install() {
+  command -v jq >/dev/null || die "jq is required (brew install jq)"
+  local first=0 a agents tmp
+  [ -d "$STATE_DIR" ] || first=1
+  for a in "$@"; do case "$a" in --no-app|--statusline) ;; --*) die "unknown option: $a" ;; esac; done
+  migrate_legacy
+  agents=$(pick_agents "$@")
+  [ -z "$agents" ] && { warn "no supported agents found; name them, e.g. signals install claude cursor"; exit 1; }
+  mkdir -p "$STATE_DIR"
+  for a in $agents; do install_agent "$a"; done
+  if has_flag --statusline "$@"; then
+    if jq -e '.statusLine and ((.statusLine.command // "") | test("signals-statusline") | not)' "$CLAUDE_SETTINGS" >/dev/null 2>&1; then
+      warn "You already have a Claude Code status line, so it was left alone."
+    else
+      tmp=$(mktemp)
+      jq --arg c "[ ! -x '$STATUSLINE' ] || '$STATUSLINE'" '.statusLine = {type: "command", command: $c}' "$CLAUDE_SETTINGS" > "$tmp" && mv "$tmp" "$CLAUDE_SETTINGS"
+      info "Claude Code: status line added (exact plan limits from terminal sessions)"
+    fi
+  fi
+  has_flag --no-app "$@" && return 0       # just the hooks (the Settings window's switches)
+
+  write_login_item
+  if test_mode; then info "Login item written (test mode: not started)"; return 0; fi
+  if [ -d "$APP" ]; then
+    start_app; info "Signals is in your menu bar, and starts at login"
+  else
+    warn "Signals.app not found at ${APP/#$HOME/~}. Reinstall with: brew reinstall signals"
+  fi
+  info "Done. Restart running agent sessions so they pick up the hooks."
+  # First install with a screen: open the setup window.
+  [ "$first" = 1 ] && has_screen && [ -d "$APP" ] && open -g "signals://settings?welcome=1"
+  return 0
+}
+
+cmd_uninstall() {
+  # Agents named: remove just their hooks. Nothing named: remove everything,
+  # keeping usage settings and keys unless --purge.
+  local named a agents tmp
+  named=""
+  for a in "$@"; do [ "${a#--}" = "$a" ] && named="$named $a"; done
+  named="${named# }"
+  if [ -n "$named" ]; then agents=$(pick_agents $named); else agents="${AGENTS[*]}"; fi
+  for a in $agents; do uninstall_agent "$a"; done
+  [ -n "$named" ] || has_flag --no-app "$@" && return 0
+  if [ -f "$CLAUDE_SETTINGS" ] && grep -q 'signals-statusline' "$CLAUDE_SETTINGS"; then
+    tmp=$(mktemp); jq 'del(.statusLine)' "$CLAUDE_SETTINGS" > "$tmp" && mv "$tmp" "$CLAUDE_SETTINGS"
+    info "Claude Code: status line removed"
+  fi
+  test_mode || stop_app
+  rm -f "$LOGIN_PLIST"
+  rm -rf "$STATE_DIR" "$CREATED"
+  if has_flag --purge "$@"; then
+    key_del anthropic-admin; key_del openai-admin; rm -rf "$SH"
+    info "Removed usage settings, readings and saved keys"
+  fi
+  info "Uninstalled: hooks, menu bar app and login item removed."
+}
+
+cmd_status() {
+  local ok=0 a
+  echo "Sessions"
+  for a in "${AGENTS[@]}"; do
+    if agent_installed "$a"; then printf '  🟢 %-18s hooks installed\n' "$(display "$a")"
+    elif detected "$a"; then printf '  🟡 %-18s detected, not installed (signals install %s)\n' "$(display "$a")" "$a"
+    else printf '  ⚪️ %-18s not found\n' "$(display "$a")"; fi
+  done
+  echo "  $(ls "$STATE_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ') sessions tracked"
+  echo "Usage"
+  cmd_usage_status | sed 's/^/  /'
+  echo "App"
+  if app_running; then echo "  running in the menu bar"; else echo "  not running in the menu bar (signals install)"; ok=1; fi
+  if [ -f "$LOGIN_PLIST" ]; then echo "  starts at login"; else echo "  not set to start at login"; ok=1; fi
+  return $ok
+}
+
+# Machine-readable state for the Signals window.
+cmd_info() { # agents
+  local a first=1
+  printf '['
+  for a in "${AGENTS[@]}"; do
+    [ $first = 1 ] || printf ','; first=0
+    jq -nc --arg id "$a" --arg name "$(display "$a")" \
+      --argjson detected "$(detected "$a" && echo true || echo false)" \
+      --argjson installed "$(agent_installed "$a" && echo true || echo false)" \
+      '{id: $id, name: $name, detected: $detected, installed: $installed}'
+  done
+  printf ']\n'
+}
+cmd_usage_info() {
+  local a=false o=false conf='{}'
+  [ -n "$(key_get anthropic-admin)" ] && a=true
+  [ -n "$(key_get openai-admin)" ] && o=true
+  [ -f "$CONFIG" ] && conf=$(cat "$CONFIG")
+  local d; d=$(detected_plan); [ -n "$d" ] || d=null
+  jq -nc --argjson c "$conf" --argjson d "$d" --argjson a "$a" --argjson o "$o" '
+    { detected_plan: $d.name, detected_label: $d.label, saved_keys: {anthropic: $a, openai: $o},
+      mode: (if ($c.mode // "off") == "off" then null else $c.mode end),
+      plan: $c.plan.name, budget: $c.budget }'
+}
+
+cmd_settings() { # [page]
+  if has_screen && [ -d "$APP" ] && ! test_mode; then
+    app_running || start_app
+    open -g "signals://settings${1:+?page=$1}"
+  else
+    cmd_status
+  fi
+}
+
+menu_text() { sed -E 's/ \| (size|color|href|bash|tooltip|font|refresh)=.*$//; /^(Settings…|Set budget…|Refresh|Turn on usage…)$/d'; }
+
+case "${1:-}" in
+  _info)       cmd_info ;;                        # used by the Signals window
+  _usage_info) cmd_usage_info ;;
+  settings)    shift; cmd_settings "${1:-}" ;;
+  setup)       shift
+               if [ $# -eq 0 ]; then cmd_settings; elif [ "$1" = "--text" ]; then cmd_usage --text; else cmd_usage "$@"; fi ;;
+  usage)       shift; cmd_usage "$@" ;;
+  connect)     cmd_usage anthropic ;;             # shorthand
+  budget)      shift; cmd_budget "$@" ;;
+  pass)        shift; cmd_pass "$@" ;;
+  disconnect)  cmd_disconnect ;;
+  menu)        { "$LIBEXEC/signals-sessions-menu"; echo "---"; "$LIBEXEC/signals-usage-menu"; } | menu_text ;;
+  install)     shift; cmd_install "$@" ;;
+  uninstall)   shift; cmd_uninstall "$@" ;;
+  status)      cmd_status ;;
+  --version|-v) echo "$VERSION" ;;
+  *) cat <<EOF
+usage: signals settings                     open the Signals window
+       signals status                       sessions, usage and the app
+       signals menu                         the menu as text (terminals, SSH)
+       signals install [agent...] [--statusline]
+                                            wire up detected agents (or the ones named)
+       signals uninstall [agent...] [--purge]
+                                            remove hooks (everything, including the app, if none named)
+
+       signals usage                        your usage now
+       signals usage plan                   Claude plan (from your Claude login): session and weekly limits
+       signals usage estimate               pay as you go: what each session on this Mac costs
+       signals usage anthropic|openai       your whole account's bill (needs an admin key)
+       signals usage off                    session lights only
+       signals budget [usd|off]             monthly budget (API and estimate)
+       signals pass [30m|1h|off]            let prompts through while over budget
+       signals disconnect                   remove saved admin keys
+       signals --version
+agents: ${AGENTS[*]}
+EOF
+     exit 1 ;;
+esac

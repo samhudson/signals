@@ -1,0 +1,23 @@
+#!/bin/bash
+# signals-plan: the Claude plan this Mac is signed in with, as {"name", "label",
+# "price"}; nothing when it isn't signed in. Read from Claude Code's own
+# settings file (~/.claude.json), never from its login in the Keychain. The
+# plan isn't a setting: the meter runs this on every refresh, so a change of
+# plan shows up by itself.
+set -u
+export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+if [ -n "${SIGNALS_DETECTED_PLAN+x}" ]; then
+  plan=$(jq -nc --arg t "$SIGNALS_DETECTED_PLAN" '{t: ($t | sub("20$"; "")), r: (if ($t | endswith("20")) then "20x" else "" end)}')
+else
+  plan=$(jq -c '.oauthAccount // empty | {t: ((.organizationType // "") | sub("^claude_"; "")),
+                                          r: (.organizationRateLimitTier // .userRateLimitTier // "")}' "$HOME/.claude.json" 2>/dev/null)
+fi
+[ -n "$plan" ] || exit 0
+jq -c '
+  def title: (.[0:1] | ascii_upcase) + .[1:];
+  if .t == "" or .t == null then empty
+  elif .t == "pro" then {name: "pro", label: "Claude Pro", price: 20}
+  elif .t == "max" and (.r | test("20x")) then {name: "max20", label: "Claude Max 20x", price: 200}
+  elif .t == "max" then {name: "max", label: "Claude Max 5x", price: 100}
+  else {name: .t, label: "Claude \(.t | title)", price: null} end' <<<"$plan" 2>/dev/null
+exit 0

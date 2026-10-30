@@ -1,0 +1,36 @@
+#!/bin/bash
+# signals-gate: the budget gate, run by signals-hook before a Claude Code
+# prompt is sent. In estimate and Anthropic API modes, once this month's spend
+# has reached the budget and there's no active pass, it exits 2 and the prompt
+# is held, with a message saying how to get through. Fails open: any problem,
+# or Usage being off, lets the prompt in.
+set -u
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+TB="${SIGNALS_HOME:-$HOME/.signals}/usage"
+LIBEXEC="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+cat >/dev/null   # hook payload is not needed
+
+# Cheap checks first, so the gate costs nothing when it can't close: only
+# budgets on Claude spend gate Claude Code (plans limit themselves, and
+# OpenAI spend shouldn't block Claude).
+read -r mode budget < <(jq -r '[.mode // (if .plan then "plan" elif .budget then "estimate" else "none" end), .budget // ""] | @tsv' "$TB/config.json" 2>/dev/null) || exit 0
+case "$mode" in estimate|anthropic) ;; *) exit 0 ;; esac
+[ -n "$budget" ] || exit 0
+pass=$(cat "$TB/pass" 2>/dev/null || echo 0)
+[ "${pass:-0}" -gt "$(date +%s)" ] 2>/dev/null && exit 0
+
+state="$TB/state.json"
+# Refresh if the menu bar app hasn't updated the state in the last 2 minutes.
+age=$(( $(date +%s) - $(stat -f %m "$state" 2>/dev/null || echo 0) ))
+[ "$age" -gt 120 ] && SIGNALS_NO_NOTIFY=1 "$LIBEXEC/signals-meter" >/dev/null 2>&1
+
+read -r status spend < <(jq -r '[.status, .spend] | @tsv' "$state" 2>/dev/null) || exit 0
+[ "$status" = "over" ] || exit 0
+
+cat >&2 <<MSG
+⛔️ Signals: the gate is down. This month's spend is \$$spend of your \$$budget budget.
+   Pay the toll to continue:
+     signals pass 1h        let prompts through for an hour
+     signals budget <usd>   raise the monthly budget
+MSG
+exit 2

@@ -1,0 +1,136 @@
+#!/bin/bash
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:$PATH"
+LIBEXEC="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+CLI="$(cd "$LIBEXEC/../bin" && pwd)/signals"
+
+state=$("$LIBEXEC/signals-meter" 2>/dev/null)
+[ -z "$state" ] && { echo "🚧"; echo "---"; echo "Signals could not read usage | color=gray"; exit 0; }
+
+# Note: no apostrophes in the jq program below; it is single-quoted for the shell.
+jq -r --arg cli "$CLI" '
+  def money: (. * 100 | round) as $c
+    | "$\($c / 100 | floor)." + (($c % 100) | tostring | if length == 1 then "0" + . else . end);
+  def short: if . >= 100 then "$\(round)" else money end;
+  def at: strflocaltime("%-I:%M%p") | ascii_downcase;
+  def day: strflocaltime("%a %-I%p") | sub("AM$"; "am") | sub("PM$"; "pm");
+  def ago: if . < 90 then "just now" elif . < 3600 then "\(. / 60 | floor)m ago" else "\(. / 3600 | floor)h ago" end;
+  def pct: floor | tostring + "%";
+  def bar: (. / 10 | floor) as $n | ([$n, 10] | min) as $f
+    | ([range(0; $f)] | map("▓") | join("")) + ([range(0; 10 - $f)] | map("░") | join(""));
+  def dot: {working: "🔴", waiting: "🟡", done: "🟢", error: "⚫️"}[.] // "🟢";
+  def clip: if length > 34 then .[0:33] + "…" else . end;
+  def act($label; $args): "\($label) | bash=\"\($cli)\" \($args) terminal=false refresh=true";
+  def codex_lines: if .codex then
+      .codex as $c | "---", "Codex · \($c.plan) | size=12 color=gray",
+      (if $c.session.pct >= 100 then "5-hour limit reached · back at \($c.session.resets_at | at)"
+       elif $c.session.active then "5-hour \($c.session.pct | bar) \($c.session.pct | pct) · resets \($c.session.resets_at | at) | font=Menlo size=12"
+       else "5-hour window not started | size=12" end),
+      (if $c.weekly then
+         (if $c.weekly.pct >= 100 then "Weekly limit reached · back \($c.weekly.resets_at | day)"
+          else "This week \($c.weekly.pct | bar) \($c.weekly.pct | pct) · resets \($c.weekly.resets_at | day) | font=Menlo size=12" end)
+       else empty end),
+      "From Codex · \(.updated - $c.as_of | ago) | size=10 color=gray",
+      "Usage on chatgpt.com ↗ | href=https://chatgpt.com/codex/settings/usage size=11"
+    else empty end;
+  def footer: codex_lines, "---", act("Settings…"; "param1=settings"), "Refresh | refresh=true";
+
+  if .mode == "none" or .mode == "off" then
+    "🚧 Usage off", "---", act("Turn on usage…"; "param1=settings"), "Refresh | refresh=true"
+
+  elif .mode == "plan" then
+    # ── Claude plan: usage of your limits. Money only when on usage credits. ──
+    .account as $a
+    | if $a == null then
+        "🚧", "---",
+        "\(.plan.label // "Claude plan") | size=12 color=gray",
+        "No usage reading yet | color=gray",
+        "Run /usage in Claude Code and it appears here | size=11 color=gray",
+        footer
+      else
+        ($a.session.active and $a.session.pct > 0) as $in_session
+        | ($a.weekly.pct // 0) as $wk
+        # The 5-hour window by default; the week once 80% used and further along.
+        | (if $in_session then $a.session.pct else 0 end) as $five
+        | (if $wk >= 80 and $wk > $five then $wk else $five end | pct) as $closest
+        | (if .status == "credits" then "💳 \($a.credits.used | money)"
+           elif .status == "blocked" then "⛔️ 100%"
+           elif .status == "warn" then "⚠️ \($closest)"
+           else "🚧 \($closest)" end),
+        "---",
+        "\(.plan.label // "Claude plan") | size=12 color=gray",
+        # Session (5-hour) line
+        (if $a.session.pct >= 100 or ($a.locked != null and $wk < 100) then
+           "5-hour limit reached · back at \($a.session.resets_at | at)"
+         elif $a.session.active then
+           "5-hour \($a.session.pct | bar) \($a.session.pct | pct)" + (if $a.session.resets_at then " · resets \($a.session.resets_at | at)" else "" end) + " | font=Menlo size=12"
+         else "5-hour window not started | size=12" end),
+        (if $a.eta and .status == "warn" then "At this pace you hit it around \($a.eta | at) | size=12" else empty end),
+        # Weekly line
+        (if $a.weekly then
+           (if $wk >= 100 then "Weekly limit reached · back \($a.weekly.resets_at | day)"
+            else "This week \($wk | bar) \($wk | pct) · resets \($a.weekly.resets_at | day) | font=Menlo size=12" end)
+         else empty end),
+        # Over the limit: credits, or how to keep going
+        (if .status == "credits" then
+           "💳 On usage credits · \($a.credits.used | money) used" + (if $a.credits.limit then " of \($a.credits.limit | money)" else "" end)
+         elif .status == "blocked" then
+           "Keep going with usage credits → | href=https://claude.ai/settings/usage"
+         else empty end),
+        # Usage credits, always visible. Money only while credits are on.
+        (if .status == "credits" then empty
+         elif $a.credits.enabled then
+           "💳 Usage credits · \($a.credits.used | money) used" + (if $a.credits.limit then " of \($a.credits.limit | money) this month" else "" end) + " | size=12"
+         else
+           "Usage credits off" + ({out_of_credits: " · out of credits", user_disabled: " · turned off"}[$a.credits.reason // ""] // "") + " | size=12 color=gray"
+         end),
+        (if ($a.breakdown | length) > 0 then ($a.breakdown | map("\(.name) \(.pct)%") | join(" · ")) + " | size=11 color=gray" else empty end),
+        (if .limit_hits_week > 0 then "Hit the limit \(.limit_hits_week)× this week | size=11 color=gray" else empty end),
+        "\({claude: "From Claude Code", statusline: "From the terminal status line"}[$a.source]) · \(.updated - $a.as_of | ago) | size=10 color=gray",
+        "Usage and credits on claude.ai ↗ | href=https://claude.ai/settings/usage size=11",
+        footer
+      end
+
+  else
+    # ── API key or estimate: money against a budget, and sessions today. ──
+    ({anthropic: "Anthropic API", openai: "OpenAI API", estimate: "Pay as you go"}[.mode]) as $name
+    | (if .pass_until and .status == "over" then "🎫" elif .status == "over" then "⛔️"
+       elif .status == "warn" then "⚠️" else "🚧" end) as $icon
+    | (if .spend == null then "🚧 ?" else "\($icon) \(.spend | short)" end),
+      "---",
+      "\($name) · \(.month + "-01" | strptime("%Y-%m-%d") | mktime | strftime("%B")) | size=12 color=gray",
+      (if .spend == null then "\(.api.error // "No data yet") | color=gray"
+       elif .budget then
+         (if .status == "over" then
+            (if .pass_until then "🎫 \(.spend - .budget | money) over budget · pass until \(.pass_until | strflocaltime("%H:%M"))"
+             else "Budget reached · new prompts paused" end)
+          else "\(.spend | money) of \(.budget | money) \(.pct | bar) | font=Menlo size=12" end)
+       else "\(.spend | money) this month" end),
+      (if .projected and .spend != null and .status != "over" then
+         "On pace for \(.projected | money)" + (if .over_at then ", over by \(.over_at | strflocaltime("%b %-d"))" else "" end) + " | size=12"
+       else empty end),
+      (if .today_spend != null then
+         "Today \(.today_spend | money)" + (if .spike then " · \(.spike)× your usual" else "" end) + " | size=12"
+       else empty end),
+      (if .live_since then "Billed + ~\(.live_since | money) since the last report | size=10 color=gray" else empty end),
+      (if .api.stale then "Last known. Could not refresh. | size=10 color=gray" else empty end),
+      (if .mode == "estimate" then "At API prices, from Claude Code logs on this Mac | size=10 color=gray" else empty end),
+      (if .mode == "openai" then "Usage on platform.openai.com ↗ | href=https://platform.openai.com/usage size=11"
+       elif .mode == "estimate" then "Your API usage in Claude Console ↗ | href=https://platform.claude.com/usage size=11"
+       else "Cost in Claude Console ↗ | href=https://platform.claude.com/cost size=11" end),
+      (if .mode != "openai" and (.sessions | length) > 0 then
+         "---", "Sessions today | size=11 color=gray",
+         (.sessions[] | "\(.state | dot) \((.title // (.cwd | split("/") | last) // "Session") | clip)  \(.cost | money)"
+                        + (if .times then " ⚠️ \(.times)×" else "" end)
+                        + (if .cwd != "" then " | href=file://\(.cwd)" else "" end))
+       else empty end),
+      codex_lines,
+      "---",
+      (if .status == "over" and .mode != "openai" then
+         (if .pass_until then act("Cancel pass"; "param1=pass param2=off")
+          else act("🎫 Pay the toll: 1 hour pass"; "param1=pass param2=1h") end)
+       else empty end),
+      act("Set budget…"; "param1=budget param2=--ask"),
+      act("Settings…"; "param1=settings"),
+      "Refresh | refresh=true"
+  end
+' <<<"$state"
