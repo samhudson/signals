@@ -42,7 +42,7 @@ elif [ -n "${TAP_TOKEN:-}" ]; then url="https://x-access-token:$TAP_TOKEN@github
 elif [ -n "${CI:-}" ]; then echo "::warning::No TAP_DEPLOY_KEY or TAP_TOKEN, so the Homebrew tap was not updated. See RELEASING.md."; exit 0
 else url="https://github.com/$TAP.git"; fi
 
-git clone -q --depth 1 "$url" "$work/tap"
+git clone -q --depth 1 --branch main "$url" "$work/tap"
 formula="$work/tap/Formula/$NAME.rb"
 # Replace everything from the url line up to (not including) the license line.
 SOURCE="$source" perl -0pi -e 's/^  url .*?(?=^  license )/$ENV{SOURCE}\n/ms' "$formula"

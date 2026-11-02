@@ -201,7 +201,7 @@ check "public: the formula downloads the release's tarball (counted by GitHub)" 
   "$(grep -c 'url "https://github.com/samhudson/signals/releases/download/v9.9.9/signals-9.9.9.tar.gz"' <<<"$out")"
 check "  ...with the checksum the release publishes" 1 "$(grep -c "sha256 \"$SHA\"" <<<"$out")"
 # The real formula, in a throwaway local tap: update-tap rewrites it and commits.
-TAPDIR="$HOME/tap.git"; git init -q --bare "$TAPDIR"; W="$HOME/tapwork"; git clone -q "$TAPDIR" "$W" 2>/dev/null
+TAPDIR="$HOME/tap.git"; git init -q --bare -b main "$TAPDIR"; W="$HOME/tapwork"; git clone -q "$TAPDIR" "$W" 2>/dev/null
 mkdir -p "$W/Formula"
 printf 'class Signals < Formula\n  desc "x"\n  homepage "https://github.com/samhudson/signals"\n  url "https://github.com/samhudson/signals.git",\n      tag:      "v0.0.1",\n      revision: "abc"\n  license "MIT"\nend\n' > "$W/Formula/signals.rb"
 git -C "$W" add -A; git -C "$W" -c user.name=t -c user.email=t@t commit -qm init; git -C "$W" push -q origin HEAD:main 2>/dev/null
