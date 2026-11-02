@@ -101,7 +101,10 @@ import re, sys
 ver, new = sys.argv[1], sys.argv[2].rstrip() + "\n"
 s = open("CHANGELOG.md").read()
 pat = re.compile(r"^## \[" + re.escape(ver) + r"\].*?(?=^## \[|\Z)", re.S | re.M)
-if pat.search(s): s = pat.sub(new + "\n", s, count=1)
+unreleased = re.compile(r"^## \[" + re.escape(ver) + r"\] - Unreleased$", re.M)
+# A hand-written "Unreleased" section is kept as written; it just gets its date.
+if unreleased.search(s): s = unreleased.sub(new.splitlines()[0], s, count=1)
+elif pat.search(s): s = pat.sub(new + "\n", s, count=1)
 else:
     m = re.search(r"^## \[", s, re.M)
     s = (s[:m.start()] + new + "\n" + s[m.start():]) if m else (s.rstrip() + "\n\n" + new)
