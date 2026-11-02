@@ -53,14 +53,14 @@ Run it by hand on any tag from the Actions tab (dry run by default) to check a r
 
 ## Download counts
 
-Homebrew downloads the tarball attached to the GitHub Release, and GitHub counts every download. So every `brew install` and `brew upgrade` is counted (Homebrew's own analytics only cover its official repositories, not personal taps).
+Homebrew downloads the tarball attached to the GitHub Release, and GitHub counts every request for it. So every `brew install` and `brew upgrade` is counted (Homebrew's own analytics only cover its official repositories, not personal taps). Homebrew checks the file's headers before downloading it, and GitHub counts that check too, so one install shows up as about 2 downloads; `script/downloads` shows both. Counts appear about 10 to 15 minutes after the download.
 
 ```bash
 script/downloads          # installs per release, totals, and repo views/clones
 script/downloads --json   # the same as JSON
 ```
 
-The **Download stats** workflow (`.github/workflows/stats.yml`) saves a snapshot every Monday to the `stats` branch (`downloads.jsonl`), because GitHub keeps views and clones for only 14 days. The release's install check installs once per final release; subtract it to count people. Counting starts once the repo is public: a private repo's formula installs from the git tag, which isn't counted.
+The **Download stats** workflow (`.github/workflows/stats.yml`) saves a snapshot every Monday to the `stats` branch (`downloads.jsonl`), because GitHub keeps views and clones for only 14 days. The release's install check installs once per final release. Counting starts once the repo is public: a private repo's formula installs from the git tag, which isn't counted.
 
 ## One-time setup: the tap deploy key
 

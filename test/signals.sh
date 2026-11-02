@@ -223,12 +223,13 @@ jq -n '[{tag_name: "v1.1.0", published_at: "2026-11-02T00:00:00Z", prerelease: f
         {tag_name: "v1.0.0", published_at: "2026-10-30T00:00:00Z", prerelease: false,
          assets: [{name: "signals-1.0.0.tar.gz", download_count: 30}, {name: "Signals-1.0.0.dmg", download_count: 5}]}]' > "$HOME/releases.json"
 dl=$(PATH="$STUB:$PATH" "$ROOT/script/downloads" --json)
-check "downloads: installs per release" "12 2 30" "$(jq -r '[.releases[].installs] | join(" ")' <<<"$dl")"
-check "  ...checksum fetches aren't counted as installs" 12 "$(jq -r '.releases[0].installs' <<<"$dl")"
-check "  ...total counts final releases only" 42 "$(jq -r .total_installs <<<"$dl")"
+check "downloads: per release" "12 2 30" "$(jq -r '[.releases[].downloads] | join(" ")' <<<"$dl")"
+check "  ...checksum fetches aren't counted" 12 "$(jq -r '.releases[0].downloads' <<<"$dl")"
+check "  ...total counts final releases only" 42 "$(jq -r .total_downloads <<<"$dl")"
+check "  ...installs are about half (Homebrew checks, then downloads)" "6 21" "$(jq -r '"\(.releases[0].installs) \(.total_installs)"' <<<"$dl")"
 check "  ...other files (like a future .dmg) counted separately" 5 "$(jq -r '.releases[2].other' <<<"$dl")"
 check "  ...works without traffic access" null "$(jq -r .views_14d <<<"$dl")"
-check "  ...and prints a table" 1 "$(PATH="$STUB:$PATH" "$ROOT/script/downloads" | grep -c 'Total (final releases): 42')"
+check "  ...and prints a table" 1 "$(PATH="$STUB:$PATH" "$ROOT/script/downloads" | grep -c 'Total (final releases): 42 downloads, about 21 installs')"
 
 echo "release"
 check "no em dashes in shipped files" 0 "$(cat "$ROOT"/bin/* "$ROOT"/libexec/signals-* "$ROOT"/app/*.swift "$ROOT"/README.md "$ROOT"/assets/*.svg 2>/dev/null | grep -c '—')"
