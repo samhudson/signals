@@ -1,10 +1,14 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="Signals: your AI agent sessions, and what they use, in the macOS menu bar" width="100%">
+</p>
+
 # Signals
 
 See your AI agent sessions at a glance, and keep an eye on what they use, from the macOS menu bar.
 
-```
-● ● ●  ⛌ 42%
-```
+<p align="center">
+  <img src="assets/menubar.svg" alt="Signals in the menu bar: two items. The session lights open a list of every agent session and its state. The gate opens your usage: on a plan, your Claude and Codex limits; on an API key, this month's spend and what each session cost." width="100%">
+</p>
 
 **Sessions.** One light per agent session: 🔴 working, 🟡 needs you, 🟢 done. Click for the list, with each session's title, agent and folder. Works with Claude Code, Codex, Cursor, Gemini CLI and GitHub Copilot.
 

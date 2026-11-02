@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300" role="img" aria-label="Signals: your AI agent sessions, and what they use, in the macOS menu bar">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#14161c"/><stop offset="1" stop-color="#232733"/></linearGradient>
+    <linearGradient id="housing" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2b2f3a"/><stop offset="0.5" stop-color="#3a3f4d"/><stop offset="1" stop-color="#2b2f3a"/></linearGradient>
+    <pattern id="stripes" width="28" height="14" patternUnits="userSpaceOnUse"><rect width="28" height="14" fill="#f5f5f7"/><rect width="14" height="14" fill="#ff453a"/></pattern>
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="9"/></filter>
+    <radialGradient id="shine" cx="0.35" cy="0.3" r="0.7"><stop offset="0" stop-color="#fff" stop-opacity="0.55"/><stop offset="0.4" stop-color="#fff" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="900" height="300" rx="20" fill="url(#bg)"/>
+  <rect x="0" y="254" width="900" height="46" fill="#ffffff" opacity="0.03"/>
+  <g fill="#ffffff" opacity="0.06">
+    <rect x="420" y="272" width="60" height="7" rx="3.5"/><rect x="530" y="272" width="60" height="7" rx="3.5"/>
+    <rect x="640" y="272" width="60" height="7" rx="3.5"/><rect x="750" y="272" width="60" height="7" rx="3.5"/>
+  </g>
+
+  <!-- the signal: one light per session (red working, amber needs you, green done) -->
+  <rect x="91" y="246" width="18" height="40" fill="#2b2f3a"/>
+  <rect x="56" y="34" width="88" height="214" rx="22" fill="url(#housing)" stroke="#4a5060" stroke-width="2"/>
+  <circle cx="100" cy="88" r="23" fill="#3d1414"/><circle cx="100" cy="148" r="23" fill="#3d3010"/><circle cx="100" cy="208" r="23" fill="#123018"/>
+  <g opacity="0"><animate attributeName="opacity" values="1;1;0;0;0;0;1" keyTimes="0;0.3;0.33;0.66;0.97;0.99;1" dur="6s" repeatCount="indefinite"/>
+    <circle cx="100" cy="88" r="29" fill="#ff3b30" filter="url(#glow)" opacity="0.8"/><circle cx="100" cy="88" r="23" fill="#ff453a"/><circle cx="100" cy="88" r="23" fill="url(#shine)"/></g>
+  <g opacity="0"><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.31;0.34;0.64;0.67;1" dur="6s" repeatCount="indefinite"/>
+    <circle cx="100" cy="148" r="29" fill="#ffcc00" filter="url(#glow)" opacity="0.8"/><circle cx="100" cy="148" r="23" fill="#ffd60a"/><circle cx="100" cy="148" r="23" fill="url(#shine)"/></g>
+  <g opacity="0"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.65;0.68;0.97;1" dur="6s" repeatCount="indefinite"/>
+    <circle cx="100" cy="208" r="29" fill="#30d158" filter="url(#glow)" opacity="0.8"/><circle cx="100" cy="208" r="23" fill="#32d74b"/><circle cx="100" cy="208" r="23" fill="url(#shine)"/></g>
+
+  <!-- the gate: your usage; it lifts while you're within your limits -->
+  <rect x="196" y="200" width="20" height="56" rx="4" fill="#3a3f4d" stroke="#4a5060"/>
+  <g><animateTransform attributeName="transform" type="rotate" values="0 206 208;0 206 208;-70 206 208;-70 206 208;0 206 208" keyTimes="0;0.35;0.45;0.8;1" dur="6s" repeatCount="indefinite"/>
+    <rect x="206" y="201" width="170" height="14" rx="7" fill="url(#stripes)" stroke="#d1d1d6" stroke-width="1"/>
+    <circle cx="206" cy="208" r="9" fill="#d1d1d6"/></g>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="420" y="104" fill="#f5f5f7" font-size="58" font-weight="700" letter-spacing="-1.2">Signals</text>
+    <text x="422" y="144" fill="#a1a6b4" font-size="20">Your AI agent sessions, and what they use,</text>
+    <text x="422" y="170" fill="#a1a6b4" font-size="20">right in the macOS menu bar.</text>
+    <g font-size="15" font-weight="600">
+      <rect x="422" y="194" width="104" height="34" rx="17" fill="#ff453a" fill-opacity="0.14" stroke="#ff453a" stroke-opacity="0.5"/>
+      <circle cx="441" cy="211" r="6" fill="#ff453a"/><text x="454" y="216" fill="#ff8a80">working</text>
+      <rect x="536" y="194" width="118" height="34" rx="17" fill="#ffd60a" fill-opacity="0.12" stroke="#ffd60a" stroke-opacity="0.5"/>
+      <circle cx="555" cy="211" r="6" fill="#ffd60a"/><text x="568" y="216" fill="#ffe57a">needs you</text>
+      <rect x="664" y="194" width="84" height="34" rx="17" fill="#32d74b" fill-opacity="0.12" stroke="#32d74b" stroke-opacity="0.5"/>
+      <circle cx="683" cy="211" r="6" fill="#32d74b"/><text x="696" y="216" fill="#86efac">done</text>
+      <rect x="758" y="194" width="92" height="34" rx="17" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.35"/>
+      <g transform="translate(774,201) scale(1.0)" fill="#f5f5f7" stroke="#f5f5f7"><rect x="0" y="4" width="4" height="12" rx="1" stroke="none"/><rect x="3.5" y="4" width="12.5" height="3.6" rx="1.8" fill="none" stroke-width="1.3"/><rect x="6.5" y="4" width="2.2" height="3.6" stroke="none"/><rect x="10.8" y="4" width="2.2" height="3.6" stroke="none"/></g><text x="798" y="216" fill="#e5e5ea">42%</text>
+    </g>
+  </g>
+</svg>
