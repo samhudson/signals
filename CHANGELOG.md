@@ -2,7 +2,7 @@
 
 All notable changes, newest first. Versions follow [Semantic Versioning](https://semver.org).
 
-## [1.0.0] - Unreleased
+## [1.0.0] - 2026-11-01
 
 First release of Signals: one menu bar app for your AI agent sessions and what they use.
 
