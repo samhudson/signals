@@ -33,7 +33,8 @@ fi
 if [ $PRINT = 1 ]; then echo "$source"; exit 0; fi
 
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-if [ -n "${TAP_DEPLOY_KEY:-}" ]; then
+if [ -n "${SIGNALS_TAP_URL:-}" ]; then url="$SIGNALS_TAP_URL"   # tests: a local tap
+elif [ -n "${TAP_DEPLOY_KEY:-}" ]; then
   printf '%s\n' "$TAP_DEPLOY_KEY" > "$work/key"; chmod 600 "$work/key"
   export GIT_SSH_COMMAND="ssh -i $work/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
   url="git@github.com:$TAP.git"
@@ -41,7 +42,6 @@ elif [ -n "${TAP_TOKEN:-}" ]; then url="https://x-access-token:$TAP_TOKEN@github
 elif [ -n "${CI:-}" ]; then echo "::warning::No TAP_DEPLOY_KEY or TAP_TOKEN, so the Homebrew tap was not updated. See RELEASING.md."; exit 0
 else url="https://github.com/$TAP.git"; fi
 
-[ -n "${SIGNALS_TAP_URL:-}" ] && url="$SIGNALS_TAP_URL"   # tests: a local tap
 git clone -q --depth 1 "$url" "$work/tap"
 formula="$work/tap/Formula/$NAME.rb"
 # Replace everything from the url line up to (not including) the license line.
