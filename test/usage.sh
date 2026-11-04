@@ -268,7 +268,9 @@ check "estimate spend is the local total" 44.65 "$(state .spend)"
 rm -rf "$HOME/.claude/projects" "$HOME/.signals/usage/cache"; mkdir -p "$HOME/.claude/projects/-s"
 now=$(date +%s); iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z; }
 haiku() { msg "$1" claude-haiku-4-5 "{\"input_tokens\":$(( $2 * 1000000 )),\"output_tokens\":0}" "$(iso "$3")" "$4"; }
-for d in 2 3 4; do haiku "past$d" 1 $(( now - d * 86400 )) /code/old > "$HOME/.claude/projects/-s/past$d.jsonl"; done
+# Past days at local noon: "now minus 48 hours" can land two sessions on one day across a clock change.
+noon_ago() { date -j -v-"$1"d -f "%Y-%m-%d %H:%M" "$(date +%Y-%m-%d) 12:00" +%s; }
+for d in 2 3 4; do haiku "past$d" 1 "$(noon_ago $d)" /code/old > "$HOME/.claude/projects/-s/past$d.jsonl"; done
 { echo '{"type":"ai-title","aiTitle":"Refactor billing service"}'; haiku a1 5 $(( now - 30 )) /code/acme/api; } > "$HOME/.claude/projects/-s/sessA.jsonl"
 { echo '{"type":"ai-title","aiTitle":"Fix the login redirect"}';   haiku b1 1 $(( now - 120 )) /code/web; } > "$HOME/.claude/projects/-s/sessB.jsonl"
 "$CLI" usage estimate >/dev/null; "$CLI" budget 1000 >/dev/null
