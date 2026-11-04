@@ -110,6 +110,34 @@ put claude a1 working /code/alpha/api 30
 reg $LIVE1 a1 /code/alpha/api idle
 out=$("$PLUGIN");                                 check "Esc-interrupted Claude turn → green" "🔴🟢🟢" "$(head -1 <<<"$out")"
 
+# Esc while Claude was asking for permission (amber): registry idle later → green
+put claude a1 waiting /code/alpha/api 30
+reg $LIVE1 a1 /code/alpha/api idle
+out=$("$PLUGIN");                                 check "Esc during a permission prompt → green" "🔴🟢🟢" "$(head -1 <<<"$out")"
+
+# Esc recorded in the transcript, registry not updated (still busy) → green, marked interrupted
+mkdir -p "$HOME/.claude/projects/-code-alpha"
+iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z; }
+interrupt() { # seconds ago
+  jq -nc --arg ts "$(iso $(( $(date +%s) - $1 )))" '{type:"user", timestamp:$ts, message:{role:"user", content:[{type:"text", text:"[Request interrupted by user]"}]}}'
+}
+reg $LIVE1 a1 /code/alpha/api busy
+put claude a1 working /code/alpha/api 60
+interrupt 10 > "$HOME/.claude/projects/-code-alpha/a1.jsonl"
+out=$("$PLUGIN")
+check "interrupt in the transcript → green" "🔴🟢🟢" "$(head -1 <<<"$out")"
+check "  ...shown as interrupted" 1 "$(grep -c 'alpha/api · Claude Code · done (interrupted)' <<<"$out")"
+check "  ...and explained by signals why" 1 "$("$CLI" why | grep -c 'interrupted at')"
+put claude a1 waiting /code/alpha/api 60;         check "  ...amber too" "🔴🟢🟢" "$(head -1 <<<"$("$PLUGIN")")"
+put claude a1 working /code/alpha/api 0;          check "a new prompt after the interrupt → red again" "🔴🔴🟢" "$(head -1 <<<"$("$PLUGIN")")"
+# The marker's words inside a message or tool call are not an interrupt.
+put claude a1 working /code/alpha/api 60
+jq -nc --arg ts "$(iso $(( $(date +%s) - 10 )))" '{type:"assistant", timestamp:$ts, message:{content:[{type:"tool_use", input:{code:"grep \"[Request interrupted by user\""}}]}}' > "$HOME/.claude/projects/-code-alpha/a1.jsonl"
+jq -nc --arg ts "$(iso $(( $(date +%s) - 5 )))" '{type:"user", timestamp:$ts, message:{content:[{type:"text", text:"why does it say [Request interrupted by user] here?"}]}}' >> "$HOME/.claude/projects/-code-alpha/a1.jsonl"
+check "the words in a tool call or message don't count as an interrupt" "🔴🔴🟢" "$(head -1 <<<"$("$PLUGIN")")"
+check "signals why explains every light" "$(jq '.rows | length' <<<"$("$STATE")")" "$("$CLI" why | grep -c '^   last hook event\|^   no hook events')"
+rm -f "$HOME/.claude/projects/-code-alpha/a1.jsonl"
+
 # Claude session started before install shows from the registry
 reg $LIVE2 b2 /code/gamma busy
 out=$("$PLUGIN");                                 check "untracked Claude session shown" 1 "$(grep -c 'gamma · Claude Code · working…' <<<"$out")"
@@ -128,6 +156,8 @@ check "first prompt line becomes the title" "Fix the login redirect bug" "$(jq -
 event codex PostToolUse t1
 event codex UserPromptSubmit t1 '{"prompt":"now something else"}'
 check "title kept across later prompts" "Fix the login redirect bug" "$(jq -r .title "$HOME/.signals/sessions/codex-t1.json")"
+event claude UserPromptSubmit t9 "$(jq -nc '{prompt: "<ide_selection>The user selected lines 3 to 4 from /x/app.py:\nimport os\n</ide_selection>\n\nFix the flaky login test"}')"
+check "editor context isn't the title" "Fix the flaky login test" "$(jq -r .title "$HOME/.signals/sessions/claude-t9.json")"
 event cursor beforeSubmitPrompt t2 "{\"prompt\":\"$(printf 'x%.0s' $(seq 1 80))\"}" >/dev/null
 check "long titles clipped to 48 chars" 48 "$(jq -r '.title | length' "$HOME/.signals/sessions/cursor-t2.json")"
 event claude StopFailure t3 '{"error_type":"rate_limit"}'; event claude UserPromptSubmit t3 '{"transcript_path":"/x/t3.jsonl"}'
@@ -137,6 +167,9 @@ mkdir -p "$HOME/.claude/projects/-code-acme"
 printf '%s\n' '{"type":"ai-title","aiTitle":"Old title"}' '{"type":"user"}' '{"type":"ai-title","aiTitle":"Refactor billing service"}' \
   > "$HOME/.claude/projects/-code-acme/t3.jsonl"
 out=$("$PLUGIN")
+put cursor t8 working /code/web-app; jq '.title = "<ide_selection>The user select"' "$HOME/.signals/sessions/cursor-t8.json" > "$HOME/t8" && mv "$HOME/t8" "$HOME/.signals/sessions/cursor-t8.json"
+check "an old title made of editor context is ignored" 1 "$("$PLUGIN" | grep -c '^🔴 web-app · Cursor')"
+rm -f "$HOME/.signals/sessions/cursor-t8.json"
 check "Claude's own title shown" 1 "$(grep -c 'Refactor billing service · Claude Code · working…' <<<"$out")"
 check "prompt title shown for other agents" 1 "$(grep -c 'Fix the login redirect bug · Codex · working…' <<<"$out")"
 check "folder kept in tooltip" 1 "$(grep -c 'Fix the login redirect bug.*tooltip=/work/t1' <<<"$out")"

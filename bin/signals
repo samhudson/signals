@@ -619,6 +619,16 @@ cmd_settings() { # [page]
   fi
 }
 
+# Why each light is the colour it is: the last hook event, Claude Code's own
+# registry, and any interrupt (Esc fires no hook).
+cmd_why() {
+  "$LIBEXEC/signals-state" | jq -r '
+    def dot: {working: "🔴", waiting: "🟡", done: "🟢", error: "⚫️"}[.] // "🟢";
+    if (.rows | length) == 0 then "No agent sessions." else
+      (.rows[] | "\(.status | dot) \(.name) · \(.who) · \(.label)\(if .detail then " (\(.detail))" else "" end)",
+                 "   \(.why // "from hook events")") end'
+}
+
 menu_text() { sed -E 's/ \| (size|color|href|bash|tooltip|font|refresh)=.*$//; /^(Settings…|Set budget…|Refresh|Turn on usage…)$/d'; }
 
 case "${1:-}" in
@@ -636,11 +646,13 @@ case "${1:-}" in
   install)     shift; cmd_install "$@" ;;
   uninstall)   shift; cmd_uninstall "$@" ;;
   status)      cmd_status ;;
+  why)         cmd_why ;;
   --version|-v) echo "$VERSION" ;;
   *) cat <<EOF
 usage: signals settings                     open the Signals window
        signals status                       sessions, usage and the app
        signals menu                         the menu as text (terminals, SSH)
+       signals why                          why each session's light is the colour it is
        signals install [agent...] [--statusline]
                                             wire up detected agents (or the ones named)
        signals uninstall [agent...] [--purge]

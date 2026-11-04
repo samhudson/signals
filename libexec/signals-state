@@ -48,28 +48,59 @@ titles=$(
 )
 [ -z "$titles" ] && titles='{}'
 
-jq -c -n --argjson reg "$registry" --argjson states "$states" --argjson titles "$titles" --argjson now "$now" '
+# Esc in Claude Code fires no hook, but the transcript records the interrupt.
+# For Claude sessions shown as working or waiting: when was the last one?
+interrupts=$(
+  jq -r '.[] | select(.agent == "claude" and (.status == "working" or .status == "waiting")) | [.session_id, (.transcript // "-")] | @tsv' <<<"$states" \
+  | while IFS=$'\t' read -r sid t; do
+      [ -f "$t" ] || t=$(ls "$HOME"/.claude/projects/*/"$sid".jsonl 2>/dev/null | head -1)
+      [ -f "$t" ] || continue
+      # Only real interrupt entries: a user entry whose text starts with the
+      # marker (the same words inside a message or tool call don't count).
+      ts=$(tail -c 400000 "$t" | grep '\[Request interrupted by user' \
+           | jq -r 'select(.type == "user")
+                    | select([.message.content] | flatten
+                             | map(if type == "object" then (.text // "") else tostring end)
+                             | any(test("^\\[Request interrupted by user")))
+                    | .timestamp // empty' 2>/dev/null | tail -1)
+      [ -n "$ts" ] && jq -nc --arg s "$sid" --arg t "$ts" '{($s): ($t | sub("\\.[0-9]+"; "") | fromdateiso8601)}' 2>/dev/null
+    done | jq -s 'add // {}' 2>/dev/null
+)
+[ -z "$interrupts" ] && interrupts='{}'
+
+jq -c -n --argjson reg "$registry" --argjson states "$states" --argjson titles "$titles" --argjson interrupts "$interrupts" --argjson now "$now" '
   def lbl:   {working:"working…", waiting:"needs you", done:"done", error:"stopped on an error"}[.] // .;
   def rank:  {waiting:0, working:1, error:2, done:3}[.] // 4;
   def who:   {claude:"Claude Code", codex:"Codex", gemini:"Gemini", cursor:"Cursor", copilot:"Copilot"}[.] // .;
   def clip:  if length > 48 then .[0:47] + "…" else . end;
+  def at:    strflocaltime("%H:%M:%S");
+  # Titles saved before editor context was stripped from prompts.
+  def tidy:  if . == null or test("^<(ide_|system-reminder)") then null else . end;
 
-  # Claude state, corrected by its registry: "working" but idle since means the
-  # turn was interrupted (Esc), so it is done.
+  # Claude state, corrected for Esc (which fires no hook): a working or waiting
+  # turn is done if the transcript records an interrupt after the last hook
+  # event, or if the registry went idle after it. `why` explains each light.
   ([ $states[] as $h
      | ($reg | map(select($h.agent == "claude" and .sessionId == $h.session_id)) | first) as $r
      | (($r.statusUpdatedAt // 0) / 1000 | floor) as $rt
+     | ($interrupts[$h.session_id] // 0) as $it
      | ($h + {tag: ($r.name // ($h.session_id | .[0:6])),
-              title: (if $h.agent == "claude" then ($titles[$h.session_id] // $h.title) else $h.title end)})
-     | if .agent == "claude" and .status == "working" and $r.status == "idle" and $rt > (.updated + 1)
-       then . + {status:"done", updated:$rt} else . end ]) as $tracked
+              title: (if $h.agent == "claude" then ($titles[$h.session_id] // ($h.title | tidy)) else ($h.title | tidy) end)})
+     | . + {why: ("last hook event: \(.status) at \(.updated | at)"
+                  + (if $r then " · Claude registry: \($r.status) at \($rt | at)" else "" end))}
+     | if .agent == "claude" and (.status == "working" or .status == "waiting") and $it > .updated
+       then . + {status:"done", updated:$it, detail:"interrupted", why: (.why + " · interrupted at \($it | at), so done")}
+       elif .agent == "claude" and (.status == "working" or .status == "waiting") and $r.status == "idle" and $rt > (.updated + 1)
+       then . + {status:"done", updated:$rt, why: (.why + " · idle since, so the turn ended (likely Esc)")}
+       else . end ]) as $tracked
   # Claude sessions started before the hooks were installed: use the registry.
   | ($tracked | map(select(.agent == "claude") | .session_id)) as $known
   | ([ $reg[] | select(.sessionId as $s | $known | index($s) | not)
        | {agent:"claude", session_id:.sessionId, cwd:.cwd, tag:(.name // (.sessionId | .[0:6])),
           title:$titles[.sessionId],
           status:(if .status == "busy" then "working" else "done" end),
-          updated:((.statusUpdatedAt // .startedAt // 0) / 1000 | floor)} ]) as $untracked
+          updated:((.statusUpdatedAt // .startedAt // 0) / 1000 | floor),
+          why:"no hook events yet (started before Signals was set up) · Claude registry: \(.status)"} ]) as $untracked
   | ($tracked + $untracked | sort_by((.status | rank), -.updated)) as $all
   # Name = folder; parent too when two share a folder name; session tag when
   # two sessions of the same agent are in the very same folder.
@@ -85,6 +116,6 @@ jq -c -n --argjson reg "$registry" --argjson states "$states" --argjson titles "
       | $s + {name: $name} ] as $rows
   | { now: $now,
       rows: [ $rows[] | {agent, who: (.agent | who), status, label: (.status | lbl), name, cwd,
-                         updated, detail, session_id} ],
+                         updated, detail, session_id, why} ],
       counts: ($rows | group_by(.status) | map({key: .[0].status, value: length}) | from_entries) }
 '
