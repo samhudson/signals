@@ -24,3 +24,6 @@ func SignalsHome() string {
 
 func SessionsDir() string { return filepath.Join(SignalsHome(), "sessions") }
 func ClaudeDir() string   { return filepath.Join(Home(), ".claude") }
+
+// Alive reports whether a process is still running.
+func Alive(pid int) bool { return alive(pid) }
