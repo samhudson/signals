@@ -15,6 +15,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -164,7 +165,9 @@ func install(args []string) {
 		fmt.Fprintln(os.Stderr, "Couldn't set the tray to start at login:", err)
 	}
 	engine.StopTray()
-	if err := engine.StartTray(); err != nil {
+	if err := engine.StartTray(); errors.Is(err, engine.ErrNoDesktop) {
+		info("No desktop here, so no tray icon: run signals menu to see your sessions. The tray starts when you log in to a desktop.")
+	} else if err != nil {
 		fmt.Fprintln(os.Stderr, "Couldn't start the tray:", err)
 	} else {
 		info("Signals is in your tray, and starts at login")

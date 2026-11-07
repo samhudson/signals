@@ -1,11 +1,15 @@
 package engine
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+// ErrNoDesktop: there's no desktop session to show the tray in.
+var ErrNoDesktop = errors.New("no desktop session")
 
 // StopTray quits a running tray (it records its process id).
 func StopTray() {

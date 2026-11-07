@@ -32,8 +32,12 @@ func SetAutostart(on bool) error {
 	return os.WriteFile(f, []byte(entry), 0o644)
 }
 
-// StartTray launches the tray now, detached from this terminal.
+// StartTray launches the tray now, detached from this terminal. With no
+// desktop session (a server, or over SSH) there's nowhere to show it.
 func StartTray() error {
+	if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+		return ErrNoDesktop
+	}
 	prog, args := TrayProgram()
 	cmd := exec.Command(prog, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
