@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,20 +47,19 @@ func TestInstallAndHooksEndToEnd(t *testing.T) {
 	if !strings.Contains(command, filepath.ToSlash(installed)) && !strings.Contains(command, installed) {
 		t.Fatalf("hooks point at the installed program: %s", command)
 	}
-	hook := func(command, payload string) {
-		var cmd *exec.Cmd
-		if runtime.GOOS == "windows" {
-			cmd = exec.Command("cmd", "/c", command)
-		} else {
-			cmd = exec.Command("sh", "-c", command)
+	// Every shell agents run hooks in on this platform (sh on macOS and Linux;
+	// Git Bash and the Command Prompt on Windows) runs the command we wrote.
+	for i, sh := range hookShells(command) {
+		sid := fmt.Sprintf("e2e%d", i)
+		sh.Env = env
+		sh.Stdin = strings.NewReader(`{"session_id":"` + sid + `","cwd":"/work/api","prompt":"Ship the release"}`)
+		if out, err := sh.CombinedOutput(); err != nil {
+			t.Fatalf("hook through %s: %v\n%s", sh.Path, err, out)
 		}
-		cmd.Env = env
-		cmd.Stdin = strings.NewReader(payload)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("hook %q: %v\n%s", command, err, out)
+		if _, err := os.Stat(filepath.Join(h, ".signals", "sessions", "claude-"+sid+".json")); err != nil {
+			t.Errorf("hook through %s recorded the session", sh.Path)
 		}
 	}
-	hook(command, `{"session_id":"e2e","cwd":"/work/api","prompt":"Ship the release"}`)
 	if out := run("menu"); !strings.Contains(out, "🔴 Ship the release · Claude Code · working") {
 		t.Errorf("the session shows as working:\n%s", out)
 	}

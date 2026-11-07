@@ -9,10 +9,12 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 (cd "$ROOT/core" && go build -o "$WORK/signals-core" ./cmd/signals-core)
 mkdir -p "$WORK/repo"
 cp -R "$ROOT/." "$WORK/repo/"
-CORE="$WORK/signals-core"
-cp "$CORE" "$WORK/repo/libexec/signals-core"
-printf '#!/bin/bash\nexec "$(dirname "$0")/signals-core" hook "$@"\n' > "$WORK/repo/libexec/signals-hook"
-printf '#!/bin/bash\nexec "$(dirname "$0")/signals-core" state "$@"\n' > "$WORK/repo/libexec/signals-state"
+# The program lives outside libexec/ (the tests scan libexec/ for wording),
+# next to a link to the budget gate, which the hook runs before a prompt.
+mkdir -p "$WORK/core"; mv "$WORK/signals-core" "$WORK/core/signals-core"
+ln -s "$WORK/repo/libexec/signals-gate" "$WORK/core/signals-gate"
+printf '#!/bin/bash\nexec "%s" hook "$@"\n' "$WORK/core/signals-core" > "$WORK/repo/libexec/signals-hook"
+printf '#!/bin/bash\nexec "%s" state "$@"\n' "$WORK/core/signals-core" > "$WORK/repo/libexec/signals-state"
 chmod +x "$WORK/repo/libexec/signals-hook" "$WORK/repo/libexec/signals-state"
 failed=0
 for suite in sessions signals; do
