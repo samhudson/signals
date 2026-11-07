@@ -147,6 +147,15 @@ func install(args []string) {
 		}
 		info("%s: hooks added to %s", engine.AgentName(a), tilde(engine.ConfigFile(a)))
 	}
+	if !testMode() {
+		if changed, err := engine.SetUserPath(true); err != nil {
+			fmt.Fprintln(os.Stderr, "Couldn't add Signals to your PATH:", err)
+		} else if changed {
+			info("Added %s to your PATH: open a new terminal to use the signals command", tilde(engine.InstallDir()))
+		} else if !engine.OnPath() {
+			info("Note: %s isn't on your PATH yet. Most systems add it when you next log in; otherwise add it to your shell profile.", tilde(engine.InstallDir()))
+		}
+	}
 	if has(args, "--no-tray") || testMode() {
 		info("Done. Restart running agent sessions so they pick up the hooks.")
 		return
@@ -184,6 +193,7 @@ func uninstall(args []string) {
 	if !testMode() {
 		engine.SetAutostart(false)
 		engine.StopTray()
+		engine.SetUserPath(false)
 	}
 	os.RemoveAll(engine.SessionsDir())
 	os.RemoveAll(filepath.Join(engine.SignalsHome(), "created"))
