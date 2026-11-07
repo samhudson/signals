@@ -24,3 +24,27 @@ jobs:
         run: ./test/run.sh
       - name: Build the menu bar app (as brew install does)
         run: script/build-app "$RUNNER_TEMP/app"
+      - name: Session tests against the Go engine
+        run: ./test/core.sh
+
+  # The cross-platform engine (core/) on every platform Signals will support.
+  engine:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Go
+        run: go version
+      - name: Vet
+        run: go vet ./...
+      - name: Tests
+        run: go test ./...
+      - name: Build
+        run: go build -o signals-core-${{ runner.os }} ./cmd/signals-core

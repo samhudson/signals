@@ -1,2 +1,5 @@
 dist/
 libexec/Signals.app/
+
+# Go engine build output
+core/signals-core*
