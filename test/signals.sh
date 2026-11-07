@@ -217,7 +217,9 @@ check "private: the formula uses the git tag and commit (not counted)" "1 1" \
   "$(grep -c 'tag:      "v9.9.8"' <<<"$out") $(grep -c "revision: \"$(git -C "$C" rev-parse v9.9.8)\"" <<<"$out")"
 check "release candidates never go to the tap" 1 "$(PATH="$STUB:$PATH" "$ROOT/script/update-tap" v9.9.9-rc.1 --print >/dev/null 2>&1; echo $?)"
 jq -n '[{tag_name: "v1.1.0", published_at: "2026-11-02T00:00:00Z", prerelease: false,
-         assets: [{name: "signals-1.1.0.tar.gz", download_count: 12}, {name: "signals-1.1.0.tar.gz.sha256", download_count: 12}]},
+         assets: [{name: "signals-1.1.0.tar.gz", download_count: 12}, {name: "signals-1.1.0.tar.gz.sha256", download_count: 12},
+                  {name: "signals-1.1.0-linux-amd64.tar.gz", download_count: 4}, {name: "signals-1.1.0-windows-amd64.zip", download_count: 3},
+                  {name: "SHA256SUMS", download_count: 9}]},
         {tag_name: "v1.1.0-rc.1", published_at: "2026-11-01T00:00:00Z", prerelease: true,
          assets: [{name: "signals-1.1.0-rc.1.tar.gz", download_count: 2}]},
         {tag_name: "v1.0.0", published_at: "2026-10-30T00:00:00Z", prerelease: false,
@@ -229,7 +231,9 @@ check "  ...total counts final releases only" 42 "$(jq -r .total_downloads <<<"$
 check "  ...installs are about half (Homebrew checks, then downloads)" "6 21" "$(jq -r '"\(.releases[0].installs) \(.total_installs)"' <<<"$dl")"
 check "  ...other files (like a future .dmg) counted separately" 5 "$(jq -r '.releases[2].other' <<<"$dl")"
 check "  ...works without traffic access" null "$(jq -r .views_14d <<<"$dl")"
-check "  ...and prints a table" 1 "$(PATH="$STUB:$PATH" "$ROOT/script/downloads" | grep -c 'Total (final releases): 42 downloads, about 21 installs')"
+check "  ...Linux and Windows downloads counted on their own" "4 3 0" "$(jq -r '.releases[0] | "\(.linux) \(.windows) \(.other)"' <<<"$dl")"
+check "  ...and not as Homebrew installs" 12 "$(jq -r '.releases[0].downloads' <<<"$dl")"
+check "  ...and prints a table" 1 "$(PATH="$STUB:$PATH" "$ROOT/script/downloads" | grep -c 'Total (final releases): 42 Homebrew downloads (about 21 installs), 4 Linux, 3 Windows')"
 
 echo "release"
 check "no em dashes in shipped files" 0 "$(cat "$ROOT"/bin/* "$ROOT"/libexec/signals-* "$ROOT"/app/*.swift "$ROOT"/README.md "$ROOT"/assets/*.svg 2>/dev/null | grep -c '—')"

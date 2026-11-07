@@ -1,0 +1,26 @@
+#!/bin/bash
+# script/build-platforms vX.Y.Z OUTDIR: the Linux and Windows downloads for a
+# release (Intel and ARM), each with INSTALL.txt and the license, plus SHA256SUMS.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TAG="${1:?usage: script/build-platforms vX.Y.Z OUTDIR}"; OUT="$(mkdir -p "${2:?}" && cd "$2" && pwd)"
+v="${TAG#v}"
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+cd "$ROOT/core"
+for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+  os="${target%/*}"; arch="${target#*/}"; name="signals-$v-$os-$arch"; dir="$WORK/$name"
+  mkdir -p "$dir"
+  flags="-s -w -X main.version=$v"
+  if [ "$os" = windows ]; then
+    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "$flags" -o "$dir/signals.exe" ./cmd/signals
+    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "$flags -H=windowsgui" -o "$dir/signals-tray.exe" ./cmd/signals-tray
+    printf 'Signals %s for Windows\r\n\r\nIn this folder, run:\r\n\r\n    .\\signals.exe install\r\n\r\nIt copies Signals to %%LOCALAPPDATA%%\\Programs\\Signals, adds a hook to each AI agent it finds,\r\nand starts the tray icon (and at login). Restart running agent sessions afterwards.\r\nThen this folder can be deleted.\r\n\r\nMore: https://github.com/samhudson/signals\r\n' "$v" > "$dir/INSTALL.txt"
+  else
+    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "$flags" -o "$dir/signals" ./cmd/signals
+    printf 'Signals %s for Linux\n\nIn this folder, run:\n\n    ./signals install\n\nIt copies Signals to ~/.local/bin, adds a hook to each AI agent it finds, and starts\nthe tray icon (and at login). Restart running agent sessions afterwards. Then this\nfolder can be deleted.\n\nThe tray needs a desktop with a system tray (KDE, Ubuntu, and GNOME with the\nAppIndicator extension). Without one, use `signals status` and `signals menu`.\n\nMore: https://github.com/samhudson/signals\n' "$v" > "$dir/INSTALL.txt"
+  fi
+  cp "$ROOT/LICENSE" "$dir/"
+  if [ "$os" = windows ]; then (cd "$WORK" && zip -qr "$OUT/$name.zip" "$name"); else tar -C "$WORK" -czf "$OUT/$name.tar.gz" "$name"; fi
+  echo "built: $(basename "$OUT")/$name.$([ "$os" = windows ] && echo zip || echo tar.gz)"
+done
+(cd "$OUT" && shasum -a 256 signals-"$v"-* > SHA256SUMS)

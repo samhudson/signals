@@ -30,6 +30,10 @@ jobs:
           cache: false
       - name: Session tests against the Go engine
         run: ./test/core.sh
+      - name: Linux and Windows downloads build
+        run: |
+          script/build-platforms v0.0.0-ci "$RUNNER_TEMP/dist"
+          ls -l "$RUNNER_TEMP/dist"
 
   # The cross-platform engine (core/) on every platform Signals will support.
   engine:
