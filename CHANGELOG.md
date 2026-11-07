@@ -2,7 +2,7 @@
 
 All notable changes, newest first. Versions follow [Semantic Versioning](https://semver.org).
 
-## [1.1.0] - Unreleased
+## [1.1.0] - 2026-11-07
 
 Signals now runs on Linux and Windows (beta): session lights in the system tray, for the same agents as on macOS.
 
