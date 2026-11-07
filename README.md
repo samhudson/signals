@@ -5,21 +5,23 @@
 <p align="center">
   <a href="https://github.com/samhudson/signals/actions/workflows/ci.yml"><img src="https://github.com/samhudson/signals/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/samhudson/signals/releases/latest"><img src="https://img.shields.io/github/v/release/samhudson/signals?label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/macOS-13%2B-black" alt="macOS 13 or later">
+  <img src="https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-black" alt="macOS, Linux and Windows">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
 # Signals
 
-**A light for every AI agent session, and your usage, in the macOS menu bar.**
+**A light for every AI agent session, and your usage, in the macOS menu bar. Session lights for Linux and Windows too (beta).**
 
-When you run a few coding agents at once, you spend the day checking tabs: is that one still working, is this one waiting for me to approve something, how close am I to my limit? Signals answers all three at a glance, for Claude Code, Codex, Cursor, Gemini CLI and GitHub Copilot, without sending anything off your Mac.
+When you run a few coding agents at once, you spend the day checking tabs: is that one still working, is this one waiting for me to approve something, how close am I to my limit? Signals answers all three at a glance, for Claude Code, Codex, Cursor, Gemini CLI and GitHub Copilot, without sending anything off your computer.
 
 <p align="center">
   <img src="assets/menubar.svg" alt="Signals in the menu bar: two items. The session lights open a list of every agent session and its state. The gate opens your usage: on a plan, your Claude and Codex limits; on an API key, this month's spend and what each session cost." width="100%">
 </p>
 
 ## Install
+
+### macOS
 
 ```sh
 brew install samhudson/tap/signals
@@ -29,6 +31,31 @@ signals install
 `signals install` finds the agents on your Mac, adds a small hook to each, starts Signals in the menu bar (and at login), and opens a short setup window. **Restart any agent sessions that are already running** so they pick up the hooks.
 
 Needs macOS 13 or later. Homebrew builds Signals on your Mac and installs `jq` with it.
+
+### Linux and Windows (beta)
+
+On Linux and Windows, Signals shows the session lights in the system tray: one icon, in the colour of the session that most needs you. Click it for every session; click a session to open its folder. Usage isn't available on Linux and Windows yet.
+
+Download the file for your computer from the [latest release](https://github.com/samhudson/signals/releases/latest) (`amd64` for Intel and AMD, `arm64` for ARM), then:
+
+**Linux**
+
+```sh
+tar -xzf signals-*-linux-*.tar.gz
+./signals-*-linux-*/signals install
+```
+
+Signals copies itself to `~/.local/bin`, adds the hooks, and starts the tray now and at login. The tray needs a desktop with one: KDE Plasma, Ubuntu, or GNOME with the AppIndicator extension. Without a tray (a server, or over SSH), install with `--no-tray` and use `signals menu` to see your sessions.
+
+**Windows.** Extract the zip, open the `signals-…-windows-…` folder inside it, right-click and choose **Open in Terminal**, then:
+
+```powershell
+.\signals.exe install
+```
+
+Signals copies itself to `%LOCALAPPDATA%\Programs\Signals`, adds it to your PATH, adds the hooks, and starts the tray now and at sign-in. Signals isn't code-signed yet, so Windows may warn about an unknown publisher; each release lists the files' checksums in `SHA256SUMS`.
+
+Either way, **restart any agent sessions that are already running** so they pick up the hooks.
 
 ## Reading the menu bar
 
@@ -46,7 +73,7 @@ The gate turns **amber** past 80% of a limit or budget and **red** at 100%. One 
 
 ## What works with what
 
-| Agent | Session lights | "Needs you" (amber) | Usage |
+| Agent | Session lights | "Needs you" (amber) | Usage (macOS) |
 |---|:---:|:---:|---|
 | Claude Code (terminal and VS Code) | ✓ | ✓ | Claude plan limits, or cost per session on an API key |
 | Codex CLI | ✓ | ✓ | ChatGPT plan limits |
@@ -54,7 +81,7 @@ The gate turns **amber** past 80% of a limit or budget and **red** at 100%. One 
 | Cursor | ✓ | | |
 | GitHub Copilot (VS Code) | ✓ | | |
 
-Cursor and Copilot don't report when they're waiting on you, so their lights are red and green only. Claude Code now approves low-risk actions itself by default (auto mode), so you'll see amber less often than you used to: when it appears, something really does need you.
+Session lights work the same on macOS, Linux and Windows. Cursor and Copilot don't report when they're waiting on you, so their lights are red and green only. Claude Code now approves low-risk actions itself by default (auto mode), so you'll see amber less often than you used to: when it appears, something really does need you.
 
 ## Usage
 
@@ -70,11 +97,11 @@ On a plan, the figure in the menu bar is your 5-hour window, or your week once t
 
 ## Privacy
 
-Everything stays on your Mac. Signals doesn't have a server, doesn't collect analytics, and never uses your AI accounts' logins.
+Everything stays on your computer. Signals doesn't have a server, doesn't collect analytics, and never uses your AI accounts' logins.
 
 - **What it reads:** the events each agent's hook passes it (prompt sent, tool used, waiting, finished), the usage Claude Code and Codex already save on your Mac, and the token counts in Claude Code's logs (for pay as you go).
 - **What it keeps,** in `~/.signals`: each session's state and a short title (Claude Code's own title, or the first line of your first prompt), your usage settings, and the latest usage reading. Not your prompts, and not your code.
-- **What it changes:** the hooks section of each agent's settings file (a backup is saved next to it), and a login item so it starts with your Mac. `signals uninstall` removes all of it.
+- **What it changes:** the hooks section of each agent's settings file (a backup is saved next to it), and a login item so it starts when you log in. On Windows, it also adds its folder to your PATH. `signals uninstall` removes all of it.
 
 ## When a light looks wrong
 
@@ -90,7 +117,7 @@ shows, for every session, why its light is the colour it is: the last event from
 
 ## Commands
 
-Everything in the window is on the command line too.
+Everything in the window is on the command line too. On Linux and Windows, `install`, `uninstall`, `status`, `why` and `menu` work the same; the Usage commands are macOS only for now.
 
 | Command | Does |
 |---|---|
@@ -112,14 +139,19 @@ signals uninstall --purge
 brew uninstall signals
 ```
 
+On Linux, run `signals uninstall --purge`, then delete `~/.local/bin/signals`. On Windows, run `signals uninstall --purge`, then delete the `%LOCALAPPDATA%\Programs\Signals` folder.
+
 ## Development
 
-Signals is a small Swift menu bar app (`app/`) over shell scripts that do the work (`bin/`, `libexec/`), so every behaviour is testable from the command line.
+On macOS, Signals is a small Swift menu bar app (`app/`) over shell scripts that do the work (`bin/`, `libexec/`), so every behaviour is testable from the command line. On Linux and Windows, the same session engine is written in Go (`core/`), with a tray built on [fyne.io/systray](https://github.com/fyne-io/systray); the macOS session tests also run against it, so the two behave the same.
 
 ```sh
 ./test/run.sh                          # every test, in throwaway home folders
 script/build-app "$PWD/build"          # build Signals.app
 test/live-claude.sh ~/some/project     # drive a real Claude Code session and check the lights (uses a little of your plan)
+(cd core && go test ./...)             # the Go engine, CLI and tray
+test/core.sh                           # the session tests against the Go engine
+script/build-platforms v0.0.0 dist     # the Linux and Windows downloads
 ```
 
 Releases are cut with `script/release` and published by GitHub Actions; see [RELEASING.md](RELEASING.md). Bug reports and ideas are welcome in [Issues](https://github.com/samhudson/signals/issues). For security problems, see [SECURITY.md](SECURITY.md).

@@ -2,6 +2,22 @@
 
 All notable changes, newest first. Versions follow [Semantic Versioning](https://semver.org).
 
+## [1.1.0] - Unreleased
+
+Signals now runs on Linux and Windows (beta): session lights in the system tray, for the same agents as on macOS.
+
+### Features
+
+- Linux and Windows downloads (Intel and ARM) on every release, with checksums in SHA256SUMS
+- `signals install`, `uninstall`, `status`, `why` and `menu` on Linux and Windows; the tray starts at login
+- On Windows, Signals adds itself to your PATH (and removes itself on uninstall)
+- The download counter reports Homebrew installs, Linux and Windows downloads separately
+
+### Notes
+
+- Usage (plan limits and API spend) is macOS only for now
+- The Windows programs aren't code-signed yet
+
 ## [1.0.1] - 2026-11-03
 
 ### Fixes
