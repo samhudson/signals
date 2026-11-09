@@ -87,6 +87,10 @@ check "  ...with how old the reading is" 1 "$(meter '.updated - .account.as_of |
 check "  ...and the per-product split" "Claude Code" "$(meter '.account.breakdown[0].name')"
 saved 23 39 600 -60
 check "a session that has reset since starts from zero" "0 false 39" "$(meter '"\(.account.session.pct) \(.account.session.active) \(.account.weekly.pct)"')"
+check "  ...and the reading is marked out of date" true "$(meter '.account.outdated')"
+check "  ...and says so, instead of 'not started'" 1 "$("$CLI" usage | grep -c 'reset since the last reading')"
+saved 23 39 600
+check "a reading inside its windows isn't out of date" false "$(meter '.account.outdated')"
 saved 23 39 600
 jq -nc --argjson now "$(date +%s)" '{five_hour: {used_percentage: 31, resets_at: ($now + 3000)}, seven_day: {used_percentage: 40, resets_at: ($now + 86400)}, captured_at: $now}' > "$U/limits.json"
 check "a newer status line reading wins" "statusline 31" "$(meter '"\(.account.source) \(.account.session.pct)"')"

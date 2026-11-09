@@ -99,6 +99,7 @@ struct Usage: Decodable {
     struct Account: Decodable {
         let session: Window?; let weekly: Window?; let locked: String?; let credits: Credits?
         let breakdown: [Share]?; let source: String?; let as_of: Double?; let eta: Double?
+        let outdated: Bool?
     }
     struct Plan: Decodable { let label: String? }
     struct API: Decodable { let error: String?; let stale: Bool? }
@@ -186,9 +187,11 @@ enum StatusArt {
         if u.mode != "plan" { return (u.spend.map(shortMoney) ?? "?", nil) }
         if u.status == "credits" { return (money(u.account?.credits?.used ?? 0), nil) }
         var limits: [(agent: String, label: String, pct: Double)] = []
-        if let a = u.account, let x = closest(session: a.session, weekly: a.weekly) { limits.append(("claude", x.label, x.pct)) }
+        // A Claude reading from before its limits reset says nothing about now.
+        let claudeOutdated = u.account?.outdated == true && u.account?.session?.active != true
+        if let a = u.account, !claudeOutdated, let x = closest(session: a.session, weekly: a.weekly) { limits.append(("claude", x.label, x.pct)) }
         if let c = u.codex, let x = closest(session: c.session, weekly: c.weekly) { limits.append(("codex", x.label, x.pct)) }
-        guard let top = limits.max(by: { $0.pct < $1.pct }) else { return ("", nil) }
+        guard let top = limits.max(by: { $0.pct < $1.pct }) else { return (claudeOutdated ? "?" : "", nil) }
         // Just the percentage: the hover text and the menu say which limit and whose.
         return ("\(Int(min(top.pct, 100)))%", nil)
     }
@@ -352,10 +355,13 @@ struct Dashboard: View {
     func pctText(_ p: Double) -> String { "\(Int(p.rounded(.down)))%" }
 
     /// Session and week rows for a plan; a limit that's been hit turns its bar red.
-    @ViewBuilder func limits(session: Usage.Window?, weekly: Usage.Window?) -> some View {
+    @ViewBuilder func limits(session: Usage.Window?, weekly: Usage.Window?, outdated: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             if let s = session, s.active == true, let p = s.pct {
                 MeterRow(label: "5-hour", pct: p, value: pctText(p), note: s.resets_at.map(clock) ?? "")
+            } else if outdated {
+                Text("Your limits have reset since this reading. Run /usage in Claude Code to update it.")
+                    .font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 MeterRow(label: "5-hour", pct: 0, value: "0%", note: "not started")
             }
@@ -369,7 +375,7 @@ struct Dashboard: View {
         VStack(alignment: .leading, spacing: 6) {
             PanelHeader(title: "Claude Code · \(u.plan?.label ?? "Claude plan")", age: u.account?.as_of)
             if let a = u.account {
-                limits(session: a.session, weekly: a.weekly)
+                limits(session: a.session, weekly: a.weekly, outdated: a.outdated == true)
                 if u.status == "credits", let c = a.credits {
                     Label("On usage credits · \(money(c.used ?? 0)) used" + (c.limit.map { " of \(money($0))" } ?? ""), systemImage: "creditcard.fill")
                         .font(.system(size: 11.5, weight: .medium)).foregroundStyle(.blue)

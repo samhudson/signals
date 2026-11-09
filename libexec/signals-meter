@@ -124,6 +124,8 @@ if [ "$mode" = plan ]; then
                      reason: (.extra_usage.disabled_reason // .spend.disabled_reason),
                      ever: (.extra_usage.credits_ever_enabled // false) },
           breakdown: [ (.seven_day_breakdown.rows // [])[] | select(.percent > 0) | {name: .display_name, pct: .percent} ],
+          # Reset since the reading: what was used after that is unknown.
+          outdated: (($r5 != null and $r5 <= $now) or ($r7 != null and $r7 <= $now)),
           source: "claude", as_of: $asof }' <<<"$raw" 2>/dev/null)
     [ -z "$account" ] && account='null'
   fi
@@ -137,6 +139,7 @@ if [ "$mode" = plan ] && [ -f "$TB/limits.json" ]; then
                 else {pct: 0, resets_at: null, active: false, severity: "normal"} end),
       weekly:  (if (.seven_day.resets_at // 0) > $now then {pct: .seven_day.used_percentage, resets_at: .seven_day.resets_at, severity: "normal"} else null end),
       locked: null, credits: {enabled: false, used: 0, limit: null}, breakdown: [],
+      outdated: ((.five_hour.resets_at != null and .five_hour.resets_at <= $now) or (.seven_day.resets_at != null and .seven_day.resets_at <= $now)),
       source: "statusline", as_of: .captured_at }
     else null end' "$TB/limits.json" 2>/dev/null)
   if [ -n "$sl" ] && [ "$sl" != null ]; then

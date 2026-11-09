@@ -63,6 +63,7 @@ jq -r --arg cli "$CLI" '
            "5-hour limit reached · back at \($a.session.resets_at | at)"
          elif $a.session.active then
            "5-hour \($a.session.pct | bar) \($a.session.pct | pct)" + (if $a.session.resets_at then " · resets \($a.session.resets_at | at)" else "" end) + " | font=Menlo size=12"
+         elif $a.outdated then "Limits reset since the last reading · run /usage in Claude Code | size=12"
          else "5-hour window not started | size=12" end),
         (if $a.eta and .status == "warn" then "At this pace you hit it around \($a.eta | at) | size=12" else empty end),
         # Weekly line
