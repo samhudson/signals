@@ -128,12 +128,24 @@ check "an estimate never says the limit was hit (99% at most)" "99 ok" "$(meter 
 limit_hit 60
 check "  ...unless Claude Code was refused for a limit in that window" "100 blocked" "$(meter '"\(.account.session.pct) \(.status)"')"
 : > "$EST"; rm -f "$U/calibration.json"; saved 20 10 1200; meter . >/dev/null
-activity 600 400000; saved 80 10 60
-check "a reading 6x off the built-in ratio (Claude used elsewhere) is ignored" "2.5 1" \
+activity 600 1200000; saved 99 10 60
+check "a reading over 2x off the built-in ratio (Claude used elsewhere) is ignored" "2.5 1" \
   "$(meter . >/dev/null; jq -r '"\(.k5) \(.ignored | length)"' "$U/calibration.json")"
 : > "$EST"; rm -f "$U/calibration.json"; saved 20 10 1200; meter . >/dev/null
-activity 600 400000; saved 32 10 60
-check "  ...a close one refines it (+12 points for \$4)" 3 "$(meter . >/dev/null; jq -r .k5 "$U/calibration.json")"
+activity 600 1600000; saved 68 10 60
+check "  ...a close one refines it (+48 points for \$16)" 3 "$(meter . >/dev/null; jq -r .k5 "$U/calibration.json")"
+: > "$EST"; rm -f "$U/calibration.json"; saved 20 10 1200; meter . >/dev/null
+activity 600 300000; saved 35 10 60
+check "  ...but a reading with little activity behind it (\$3) teaches nothing" 2.5 "$(meter . >/dev/null; jq -r .k5 "$U/calibration.json")"
+# Nov 9: a 29% reading 30 minutes into a window, after \$8.81 of activity (3.29%/\$), then \$23.71 more.
+# The real reading an hour later was 90%. Learning from that early reading said 99%.
+: > "$EST"; rm -f "$U/calibration.json"
+activity 4800 881000; saved 29 10 3600 12600; meter . >/dev/null
+activity 1800 2371000
+check "an early reading isn't trusted: 29 + 2.5 x 23.71 = 88 (the real reading was 90, not 99)" 88 "$(meter '.account.session.pct')"
+saved 90 10 60 12600
+check "  ...the next reading teaches the ratio over the hour between them: 61 points for \$23.71" 2.57 \
+  "$(meter . >/dev/null; jq -r '.k5 * 100 | round / 100' "$U/calibration.json")"
 : > "$EST"; rm -f "$U/calibration.json"; saved 20 10 600
 jq '.oauthAccount = {organizationType: "claude_max", organizationRateLimitTier: "default_claude_max_20x"}' "$HOME/.claude.json" > "$HOME/c.json" && mv "$HOME/c.json" "$HOME/.claude.json"
 check "Max 20x: a twentieth of the Pro ratio" 0.125 "$(meter . >/dev/null; jq -r .base.k5 "$U/calibration.json")"
