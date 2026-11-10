@@ -2,6 +2,7 @@
 //
 //	signals-core hook <agent> [event]   record a hook event (event JSON on stdin)
 //	signals-core state                  every session, as JSON
+//	signals-core usage [summary|ledger|verify|scan] ...   API calls from agent logs
 //	signals-core version
 package main
 
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/samhudson/signals/core/engine"
+	ledger "github.com/samhudson/signals/core/usage"
 )
 
 var version = "dev"
@@ -42,6 +44,8 @@ func main() {
 		if err := enc.Encode(engine.Sessions(time.Now())); err != nil {
 			os.Exit(1)
 		}
+	case "usage":
+		os.Exit(ledger.CLI(os.Args[2:], os.Stdout, os.Stderr))
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	default:
@@ -50,7 +54,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: signals-core hook <agent> [event] | state | version")
+	fmt.Fprintln(os.Stderr, "usage: signals-core hook <agent> [event] | state | usage [summary|ledger|verify|scan] | version")
 	os.Exit(1)
 }
 

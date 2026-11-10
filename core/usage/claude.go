@@ -136,6 +136,7 @@ func readClaude(path string, from int64, loc *time.Location, wantCost bool) ([]C
 			calls[i] = mergeMax(calls[i], c)
 			return
 		}
+		c.line = n
 		at[c.K] = len(calls)
 		calls = append(calls, c)
 	})

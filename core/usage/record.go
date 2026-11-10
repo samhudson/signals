@@ -36,6 +36,7 @@ type Call struct {
 	WS   int64  `json:"ws,omitempty"` // web searches
 	Fast bool   `json:"fast,omitempty"`
 	Sub  bool   `json:"sub,omitempty"` // made by a subagent
+	line int    // where it was first seen in its log (for verify); not stored
 }
 
 // Prompt is everything the model read for this call: what long-prompt prices
