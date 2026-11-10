@@ -1,0 +1,12 @@
+#!/bin/bash
+# script/build-core [outdir]: builds signals-core, the cross-platform engine
+# (usage ledger, session state), for this Mac into libexec/engine/ (or outdir).
+# The meter runs it to count Claude Code and Codex calls. Needs Go.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+OUT="${1:-$ROOT/libexec/engine}"
+VERSION="$(grep -m1 '^VERSION=' "$ROOT/bin/signals" | cut -d'"' -f2)"
+mkdir -p "$OUT"
+cd "$ROOT/core"
+CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$OUT/signals-core" ./cmd/signals-core
+echo "built: $OUT/signals-core"

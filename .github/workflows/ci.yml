@@ -20,14 +20,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Tests
-        run: ./test/run.sh
-      - name: Build the menu bar app (as brew install does)
-        run: script/build-app "$RUNNER_TEMP/app"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: core/go.mod
           cache: false
+      - name: Tests
+        run: ./test/run.sh
+      - name: Build the menu bar app (as brew install does)
+        run: script/build-app "$RUNNER_TEMP/app"
       - name: Session tests against the Go engine
         run: ./test/core.sh
       - name: Linux and Windows downloads build

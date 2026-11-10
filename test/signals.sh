@@ -9,6 +9,7 @@ CLI="$ROOT/bin/signals"
 HOOK="$ROOT/libexec/signals-hook"
 export HOME="$(mktemp -d)"
 export SIGNALS_NO_APP=1 SIGNALS_NO_NOTIFY=1 SIGNALS_TEST_KEYS="$HOME/keys" SIGNALS_SKIP_VERIFY=1 SIGNALS_NO_PROMPT=1
+export SIGNALS_NO_LEDGER=1   # the ledger has its own suite (ledger.sh)
 trap 'rm -rf "$HOME"' EXIT
 mkdir -p "$HOME/bin"; printf '#!/bin/sh\nexit 1\n' > "$HOME/bin/osascript"; chmod +x "$HOME/bin/osascript"
 export PATH="$HOME/bin:$PATH"
@@ -283,7 +284,7 @@ check "  ...and not as Homebrew installs" 12 "$(jq -r '.releases[0].downloads' <
 check "  ...and prints a table" 1 "$(PATH="$STUB:$PATH" "$ROOT/script/downloads" | grep -c 'Total (final releases): 42 Homebrew downloads (about 21 installs), 4 Linux, 3 Windows')"
 
 echo "release"
-check "no em dashes in shipped files" 0 "$(cat "$ROOT"/bin/* "$ROOT"/libexec/signals-* "$ROOT"/app/*.swift "$ROOT"/README.md "$ROOT"/assets/*.svg 2>/dev/null | grep -c '—')"
+check "no em dashes in shipped files" 0 "$(cat "$ROOT"/bin/* "$ROOT"/libexec/signals-* "$ROOT"/libexec/pricing.json "$ROOT"/app/*.swift "$ROOT"/README.md "$ROOT"/assets/*.svg "$ROOT"/core/*/*.go "$ROOT"/core/*/*/*.go 2>/dev/null | grep -c '—')"
 check "no SwiftBar in the app or engine (the CLI mentions it only to move over)" 0 "$(cat "$ROOT"/libexec/signals-* "$ROOT"/app/*.swift 2>/dev/null | grep -ci 'swiftbar')"
 check "no old product names in the app or engine" 0 "$(cat "$ROOT"/libexec/signals-* "$ROOT"/app/*.swift 2>/dev/null | grep -ciE 'tollbooth|trafficlight')"
 if tag=$(git -C "$ROOT" describe --tags --exact-match 2>/dev/null); then

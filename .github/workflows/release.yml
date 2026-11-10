@@ -47,16 +47,16 @@ jobs:
           base="${TAG#v}"; base="${base%%-rc.*}"
           [ "$code" = "$base" ] || { echo "::error::bin/$NAME says $code but the tag is $TAG"; exit 1; }
 
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: core/go.mod
+          cache: false
       - name: Tests
         run: ./test/run.sh
 
       - name: Build the menu bar app (as brew install does)
         run: script/build-app "$RUNNER_TEMP/app"
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: core/go.mod
-          cache: false
 
       - name: Linux and Windows downloads
         run: script/build-platforms "$TAG" "$RUNNER_TEMP/dist"

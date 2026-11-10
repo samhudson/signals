@@ -310,7 +310,7 @@ if [ "$mode" = anthropic ] || [ "$mode" = openai ]; then
 fi
 
 # Live session states from the Sessions part.
-live=$(cat "${SIGNALS_HOME:-$HOME/.signals}"/sessions/claude-*.json 2>/dev/null | jq -sc 'map({(.session_id): .status}) | add // {}' 2>/dev/null)
+live=$(cat "${SIGNALS_HOME:-$HOME/.signals}"/sessions/claude-*.json "${SIGNALS_HOME:-$HOME/.signals}"/sessions/codex-*.json 2>/dev/null | jq -sc 'map({(.session_id): .status}) | add // {}' 2>/dev/null)
 [ -z "$live" ] && live='{}'
 
 # ── Codex: the plan limits Codex saves in its own session logs ────────────────
@@ -342,13 +342,24 @@ if [ -d "$CX" ]; then
   fi
 fi
 
+# ── The ledger: every API call Claude Code and Codex made, by tool ────────────
+# The engine (signals-core) reads both agents' own logs into a numbers-only
+# ledger and sums this month by tool, priced at list prices, plus today's
+# sessions. Codex sessions join the list here.
+CORE="${SIGNALS_CORE:-$LIBEXEC/engine/signals-core}"
+ledger='null'
+if [ -z "${SIGNALS_NO_LEDGER:-}" ] && [ -x "$CORE" ]; then
+  ledger=$("$CORE" usage summary --json --month "$month" 2>/dev/null | jq -c 'select(.tools)' 2>/dev/null)
+  [ -z "$ledger" ] && ledger='null'
+fi
+
 # ── Aggregate ─────────────────────────────────────────────────────────────────
 pass_until=$(cat "$TB/pass" 2>/dev/null || echo 0)
 state=$(
   { cat "$CACHE"/claude-*.json 2>/dev/null || true; } | jq -s \
     --arg month "$month" --arg today "$today" --slurpfile cfg "$CONFIG" --arg mode "$mode" \
     --argjson now "$now" --argjson pass "${pass_until:-0}" --argjson api "$api_cost" \
-    --argjson account "$account" --argjson live "$live" --argjson codex "$codex" \
+    --argjson account "$account" --argjson live "$live" --argjson codex "$codex" --argjson ledger "$ledger" \
     --argjson mstart "$month_start" --argjson mdays "$days_in_month" '
     def r2: . * 100 | round / 100;
     . as $files
@@ -384,6 +395,11 @@ state=$(
        | map(. + { state: ($live[.sid] // (if $now - .last < 90 then "working" else "done" end)),
                    times: (if $avg_session and $avg_session > 0 and .cost / $avg_session >= 2
                            then (.cost / $avg_session * 10 | floor / 10) else null end) })
+       | map(. + {agent: "claude"})
+       # Codex sessions today, from the ledger.
+       | . + [ ($ledger.sessions // [])[] | select(.agent == "codex")
+               | {sid, cost: (.cost | r2), last, cwd: (.cwd // ""), title: null, agent: "codex", priced,
+                  state: ($live[.sid] // (if $now - .last < 90 then "working" else "done" end)), times: null} ]
        | sort_by(-.last) | .[0:6]) as $sessions
 
     # Plan state, from account usage.
@@ -408,6 +424,10 @@ state=$(
         over_at: $over_at,
         spike: $spike,
         sessions: $sessions,
+        by_tool: (if $ledger == null then null
+                  else {month: $ledger.month, label: $ledger.label, complete: $ledger.complete,
+                        tools: [ $ledger.tools[] | {agent, name, calls, cost: (.cost | r2), tokens: .tokens.total,
+                                                    unpriced: .unpriced.calls} ]} end),
         budget: $budget, warn: $warn,
         pct: (if $budget and $budget > 0 and $spend != null then ($spend / $budget * 100 | floor) else null end),
         status: (if $mode == "plan" then ($plan_state // "unknown")

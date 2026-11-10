@@ -32,7 +32,12 @@ jq -r --arg cli "$CLI" '
       "From Codex · \(.updated - $c.as_of | ago) | size=10 color=gray",
       "Usage on chatgpt.com ↗ | href=https://chatgpt.com/codex/settings/usage size=11"
     else empty end;
-  def footer: codex_lines, "---", act("Settings…"; "param1=settings"), "Refresh | refresh=true";
+  # Every API call, from the logs the agents keep, by tool. On a plan, no money.
+  def tool_lines: . as $root | if (.by_tool.tools // []) | length > 0 then
+      "---", "This month by tool" + (if $root.mode == "plan" then "" else ", at API prices" end) + " | size=12 color=gray",
+      (.by_tool.tools[] | "\(.name): \(.calls) calls" + (if $root.mode == "plan" then "" else " · \(.cost | money)" end) + " | size=12")
+    else empty end;
+  def footer: codex_lines, tool_lines, "---", act("Settings…"; "param1=settings"), "Refresh | refresh=true";
 
   if .mode == "none" or .mode == "off" then
     "🚧 Usage off", "---", act("Turn on usage…"; "param1=settings"), "Refresh | refresh=true"
@@ -120,11 +125,11 @@ jq -r --arg cli "$CLI" '
        else "Cost in Claude Console ↗ | href=https://platform.claude.com/cost size=11" end),
       (if .mode != "openai" and (.sessions | length) > 0 then
          "---", "Sessions today | size=11 color=gray",
-         (.sessions[] | "\(.state | dot) \((.title // (.cwd | split("/") | last) // "Session") | clip)  \(.cost | money)"
+         (.sessions[] | "\(.state | dot) \((if .agent == "codex" then "Codex · " else "" end) + ((.title // (.cwd | split("/") | last) // "Session") | clip))  \(.cost | money)"
                         + (if .times then " ⚠️ \(.times)×" else "" end)
                         + (if .cwd != "" then " | href=file://\(.cwd)" else "" end))
        else empty end),
-      codex_lines,
+      codex_lines, tool_lines,
       "---",
       (if .status == "over" and .mode != "openai" then
          (if .pass_until then act("Cancel pass"; "param1=pass param2=off")
