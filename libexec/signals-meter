@@ -40,8 +40,10 @@ fi
 
 # ── Parse Claude Code transcripts touched in the last 40 days (cached per file) ─
 # Per transcript: priced replies, the session title, and "hit your limit" events.
+live_caches=()   # the cache files of transcripts that exist now
 while IFS= read -r f; do
   key=$(printf '%s' "$f" | shasum | cut -c1-16)
+  live_caches+=("$CACHE/claude-$key.json")
   sig="$(stat -f '%z-%m' "$f")-$phash"
   out="$CACHE/claude-$key.json"
   [ -f "$out" ] && [ "$(jq -r '.sig' "$out" 2>/dev/null)" = "$sig" ] && continue
@@ -128,6 +130,10 @@ if [ "$mode" = plan ]; then
           outdated: (($r5 != null and $r5 <= $now) or ($r7 != null and $r7 <= $now)),
           source: "claude", as_of: $asof }' <<<"$raw" 2>/dev/null)
     [ -z "$account" ] && account='null'
+    reading=$(jq -c --argjson asof "$as_of" '
+      def iso: if . == null then null else sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601 end;
+      {as_of: $asof, p5: .five_hour.utilization, r5: (.five_hour.resets_at | iso),
+       p7: .seven_day.utilization, r7: (.seven_day.resets_at | iso)}' <<<"$raw" 2>/dev/null)
   fi
 fi
 # Exact limits the terminal status line saw, when they're newer. Credits and
@@ -147,6 +153,87 @@ if [ "$mode" = plan ] && [ -f "$TB/limits.json" ]; then
       if $a == null then $s
       elif ($s.as_of // 0) > ($a.as_of // 0) then $s + {credits: $a.credits, breakdown: $a.breakdown}
       else $a end')
+    if [ "$(jq -r .source <<<"$account")" = statusline ]; then
+      reading=$(jq -c '{as_of: .captured_at, p5: .five_hour.used_percentage, r5: .five_hour.resets_at,
+                        p7: .seven_day.used_percentage, r7: .seven_day.resets_at}' "$TB/limits.json")
+    fi
+  fi
+fi
+# ── Between readings: estimate from Claude Code's activity on this Mac ──────
+# Claude Code only saves new plan usage when you run /usage (or its terminal
+# status line runs). In between, Signals prices what Claude Code has done since
+# (from its logs here, at API rates) and turns that into a percentage of each
+# limit. 5-hour windows start with the first message after a reset; the week
+# resets on a fixed day. So no reading is needed after the first one.
+#
+# The ratio (percent of a limit per API-equivalent dollar) is built in per plan.
+# A real reading can refine it, but only when it agrees within 2x: your plan also
+# counts Claude used elsewhere (another computer, claude.ai), which this Mac
+# can't see and which would make a ratio look far too high.
+if [ "$account" != null ] && [ -n "${reading:-}" ] && [ -z "${SIGNALS_NO_ESTIMATE:-}" ]; then
+  cal="$TB/calibration.json"
+  [ -f "$cal" ] && jq -e 'has("base")' "$cal" >/dev/null 2>&1 || echo '{}' > "$cal"
+  logs=$(cat "${live_caches[@]}" /dev/null 2>/dev/null)
+  costs=$(jq -sc '[.[].entries[]?] | unique_by(.k) | map([.t, .c]) | sort_by(.[0])' <<<"$logs")
+  # When Claude Code refused a message for a limit (it logs that), the limit is real.
+  hits=$(jq -sc '[.[].hits[]?] | unique' <<<"$logs")
+  plan_name=$(jq -r '.plan.name // "pro"' "$CONFIG")
+  out=$(jq -nc --argjson r "$reading" --argjson e "${costs:-[]}" --argjson hits "${hits:-[]}" --argjson now "$now" \
+              --arg plan "$plan_name" --slurpfile old "$cal" --argjson a "$account" '
+    def cost($from; $to): [$e[] | select(.[0] >= $from and .[0] < $to) | .[1]] | add // 0;
+    # An estimate never says a limit was hit (99% at most) unless Claude Code was refused in that window.
+    def shown($p; $from): if any($hits[]; . >= $from and . <= $now) then 100 else ([$p, 99] | min | floor) end;
+    # The 5-hour window that holds $now, starting from the first message after $b.
+    def window($b): ([$e[] | select(.[0] >= $b)] | first) as $x
+      | if $x == null or $x[0] > $now then null elif $x[0] + 18000 > $now then $x[0] else window($x[0] + 18000) end;
+    def near($k; $base): $k != null and $k >= $base / 2 and $k <= $base * 2;
+    ({pro: 1, max: 5, max20: 20}[$plan] // 1) as $scale
+    | {k5: (2.5 / $scale), k7: (0.25 / $scale)} as $base
+    | ($old[0] // {}) as $o
+    | ($o.prev // null) as $p
+    | ($r.r5 != null and $r.r5 > $r.as_of) as $live5
+    | ($r.r7 != null and $r.r7 > $r.as_of) as $live7
+    # A new reading: learn from the change since the previous reading in the same
+    # window (only this Mac in between, as far as possible), else from the window so far.
+    | (if $p == null or $p.as_of == $r.as_of then null
+       elif $live5 and (($p.r5 // 0) - ($r.r5 // 0) | fabs) < 120 and (($r.p5 // 0) - ($p.p5 // 0)) >= 3 and cost($p.as_of; $r.as_of) >= 1
+         then (($r.p5 - $p.p5) / cost($p.as_of; $r.as_of))
+       elif $live5 and ($r.p5 // 0) >= 5 and cost($r.r5 - 18000; $r.as_of) >= 1
+         then ($r.p5 / cost($r.r5 - 18000; $r.as_of))
+       else null end) as $c5
+    | (if $p == null or $p.as_of == $r.as_of then null
+       elif $live7 and (($p.r7 // 0) - ($r.r7 // 0) | fabs) < 120 and (($r.p7 // 0) - ($p.p7 // 0)) >= 2 and cost($p.as_of; $r.as_of) >= 2
+         then (($r.p7 - $p.p7) / cost($p.as_of; $r.as_of))
+       else null end) as $c7
+    | { base: $base, prev: $r,
+        k5: (if near($c5; $base.k5) then $c5 elif near($o.k5; $base.k5) then $o.k5 else $base.k5 end),
+        k7: (if near($c7; $base.k7) then $c7 elif near($o.k7; $base.k7) then $o.k7 else $base.k7 end),
+        ignored: ([(if $c5 != null and (near($c5; $base.k5) | not) then {k5: $c5, at: $r.as_of} else empty end),
+                   (if $c7 != null and (near($c7; $base.k7) | not) then {k7: $c7, at: $r.as_of} else empty end)]
+                  + ($o.ignored // []) | .[0:10]) } as $k
+    | cost($r.as_of; $now) as $since
+    | (if $live5 and $r.r5 > $now then {pct: (($r.p5 // 0) + $k.k5 * $since), resets_at: $r.r5}
+       else window(if $live5 then $r.r5 else $r.as_of end) as $s
+         | if $s == null then {pct: 0, resets_at: null} else {pct: ($k.k5 * cost($s; $now)), resets_at: ($s + 18000)} end
+       end) as $s5
+    | (if $r.r7 == null then null
+       elif $r.r7 > $now then {pct: (($r.p7 // 0) + $k.k7 * $since), resets_at: $r.r7}
+       else ($r.r7 + ((($now - $r.r7) / 604800 | floor) + 1) * 604800) as $next
+         | {pct: ($k.k7 * cost($next - 604800; $now)), resets_at: $next}
+       end) as $s7
+    # Only an estimate when something happened since the reading, or a window reset.
+    | (($since > 0.005) or ($r.r5 != null and $r.r5 <= $now) or ($r.r7 != null and $r.r7 <= $now)) as $changed
+    | { cal: $k,
+        account: (if ($changed | not) then $a else
+          $a + { estimated: true, outdated: false, estimated_at: $now,
+                 session: {pct: shown($s5.pct; ($s5.resets_at // $now) - 18000), resets_at: $s5.resets_at,
+                           active: ($s5.resets_at != null), severity: "normal"},
+                 locked: null }
+          + (if $s7 == null then {} else {weekly: {pct: shown($s7.pct; $s7.resets_at - 604800), resets_at: $s7.resets_at,
+                                                   severity: "normal"}} end) end) }' 2>/dev/null)
+  if [ -n "$out" ]; then
+    jq -c .cal <<<"$out" > "$cal.tmp.$$" && mv "$cal.tmp.$$" "$cal"
+    account=$(jq -c .account <<<"$out")
   fi
 fi
 # Pace: keep the last few session readings to estimate when the limit is hit.

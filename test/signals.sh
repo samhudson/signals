@@ -80,6 +80,7 @@ saved() { # session% weekly% reading-age-seconds [session-resets-in-seconds]
        seven_day_breakdown: {rows: [{display_name: "Claude Code", percent: 98}, {display_name: "Chats", percent: 2}]}}}}' > "$HOME/.claude.json"
 }
 meter() { "$ROOT/libexec/signals-meter" | jq -r "$1"; }
+mv "$P" "$HOME/work-aside"   # plan tests: only the activity each test writes
 saved 23 39 600
 "$CLI" usage plan >/dev/null
 check "usage from Claude Code's saved copy" "claude 23 39" "$(meter '"\(.account.source) \(.account.session.pct) \(.account.weekly.pct)"')"
@@ -87,13 +88,55 @@ check "  ...with how old the reading is" 1 "$(meter '.updated - .account.as_of |
 check "  ...and the per-product split" "Claude Code" "$(meter '.account.breakdown[0].name')"
 saved 23 39 600 -60
 check "a session that has reset since starts from zero" "0 false 39" "$(meter '"\(.account.session.pct) \(.account.session.active) \(.account.weekly.pct)"')"
-check "  ...and the reading is marked out of date" true "$(meter '.account.outdated')"
-check "  ...and says so, instead of 'not started'" 1 "$("$CLI" usage | grep -c 'reset since the last reading')"
+check "  ...from what this Mac did since (nothing): an estimate, not 'out of date'" "true false" "$(meter '"\(.account.estimated) \(.account.outdated)"')"
+check "  ...with estimates off, the reading is marked out of date" true "$(SIGNALS_NO_ESTIMATE=1 meter '.account.outdated')"
+check "  ...and says so, instead of 'not started'" 1 "$(SIGNALS_NO_ESTIMATE=1 "$CLI" usage | grep -c 'reset since the last reading')"
 saved 23 39 600
 check "a reading inside its windows isn't out of date" false "$(meter '.account.outdated')"
 saved 23 39 600
 jq -nc --argjson now "$(date +%s)" '{five_hour: {used_percentage: 31, resets_at: ($now + 3000)}, seven_day: {used_percentage: 40, resets_at: ($now + 86400)}, captured_at: $now}' > "$U/limits.json"
 check "a newer status line reading wins" "statusline 31" "$(meter '"\(.account.source) \(.account.session.pct)"')"
+
+echo "usage between readings: estimated from Claude Code's activity on this Mac"
+rm -f "$U/limits.json" "$U/calibration.json"
+EST="$HOME/.claude/projects/-est/s1.jsonl"; mkdir -p "$(dirname "$EST")"; : > "$EST"
+n=0
+activity() { # seconds-ago output-tokens: one Sonnet 5.5 reply ($10 per million output tokens)
+  n=$((n + 1))
+  jq -nc --arg ts "$(date -u -r $(( $(date +%s) - $1 )) +%Y-%m-%dT%H:%M:%S.000Z)" --argjson o "$2" --arg id "m$n" \
+    '{type: "assistant", sessionId: "s1", cwd: "/w", timestamp: $ts, requestId: "r\($id)",
+      message: {id: $id, model: "claude-sonnet-5-5", usage: {input_tokens: 0, output_tokens: $o}}}' >> "$EST"
+}
+limit_hit() { jq -nc --arg ts "$(date -u -r $(( $(date +%s) - $1 )) +%Y-%m-%dT%H:%M:%S.000Z)" \
+  '{type: "assistant", sessionId: "s1", timestamp: $ts, isApiErrorMessage: true, error: "rate_limit"}' >> "$EST"; }
+saved 20 10 600
+activity 900 400000
+check "activity before the reading isn't counted again" "20 10 null" "$(meter '"\(.account.session.pct) \(.account.weekly.pct) \(.account.estimated)"')"
+activity 300 400000
+check "\$4 of activity since the reading: +10 points of a Pro 5-hour window, +1 of the week" "30 11 true" \
+  "$(meter '"\(.account.session.pct) \(.account.weekly.pct) \(.account.estimated)"')"
+check "  ...from the built-in Pro ratio" "2.5 0.25" "$(jq -r '"\(.k5) \(.k7)"' "$U/calibration.json")"
+: > "$EST"; rm -f "$U/calibration.json"; saved 20 10 7200 -60
+activity 30 400000
+r=$(meter '.account.session | "\(.pct) \(.active) \(.resets_at - (now | floor))"')
+check "after a reset, a new window starts with the first message" "10 true" "$(cut -d' ' -f1,2 <<<"$r")"
+check "  ...and resets 5 hours after it" 1 "$(awk '{print ($3 > 17900 && $3 <= 17980)}' <<<"$r")"
+: > "$EST"; rm -f "$U/calibration.json"; saved 20 10 600
+activity 120 4000000
+check "an estimate never says the limit was hit (99% at most)" "99 ok" "$(meter '"\(.account.session.pct) \(.status == "warn" | if . then "ok" else "no" end)"')"
+limit_hit 60
+check "  ...unless Claude Code was refused for a limit in that window" "100 blocked" "$(meter '"\(.account.session.pct) \(.status)"')"
+: > "$EST"; rm -f "$U/calibration.json"; saved 20 10 1200; meter . >/dev/null
+activity 600 400000; saved 80 10 60
+check "a reading 6x off the built-in ratio (Claude used elsewhere) is ignored" "2.5 1" \
+  "$(meter . >/dev/null; jq -r '"\(.k5) \(.ignored | length)"' "$U/calibration.json")"
+: > "$EST"; rm -f "$U/calibration.json"; saved 20 10 1200; meter . >/dev/null
+activity 600 400000; saved 32 10 60
+check "  ...a close one refines it (+12 points for \$4)" 3 "$(meter . >/dev/null; jq -r .k5 "$U/calibration.json")"
+: > "$EST"; rm -f "$U/calibration.json"; saved 20 10 600
+jq '.oauthAccount = {organizationType: "claude_max", organizationRateLimitTier: "default_claude_max_20x"}' "$HOME/.claude.json" > "$HOME/c.json" && mv "$HOME/c.json" "$HOME/.claude.json"
+check "Max 20x: a twentieth of the Pro ratio" 0.125 "$(meter . >/dev/null; jq -r .base.k5 "$U/calibration.json")"
+rm -rf "$HOME/.claude/projects/-est" "$U/calibration.json"; mv "$HOME/work-aside" "$P"; saved 23 39 600; "$CLI" usage plan >/dev/null
 check "  ...keeping the split only Claude Code saves" "Claude Code" "$(meter '.account.breakdown[0].name')"
 jq '.captured_at -= 3600' "$U/limits.json" > "$U/l.json" && mv "$U/l.json" "$U/limits.json"
 check "an older status line reading doesn't" claude "$(meter .account.source)"
