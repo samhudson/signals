@@ -7,6 +7,7 @@
 //	signals why                              why each session's light is the colour it is
 //	signals menu                             the sessions as text
 //	signals tray                             show the tray icon (Linux; Windows uses signals-tray)
+//	signals usage [summary|ledger|verify]    API calls from agent logs, at list prices
 //	signals hook <agent> [event]             what agents run (event JSON on stdin)
 //	signals state                            every session, as JSON
 //	signals --version
@@ -26,6 +27,7 @@ import (
 
 	"github.com/samhudson/signals/core/engine"
 	"github.com/samhudson/signals/core/tray"
+	ledger "github.com/samhudson/signals/core/usage"
 )
 
 var version = "dev"
@@ -66,6 +68,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "usage":
+		os.Exit(ledger.CLI(args[1:], os.Stdout, os.Stderr))
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "help", "--help", "-h":
@@ -82,6 +86,7 @@ func usage(code int) {
        signals why                              why each session's light is the colour it is
        signals menu                             the sessions as text
        signals tray                             show the tray icon
+       signals usage [summary|ledger|verify]    API calls from Claude Code and Codex logs, at list prices
        signals --version
 agents: ` + strings.Join(engine.Agents, " ") + "\n")
 	os.Exit(code)

@@ -5,7 +5,7 @@
 #
 #   {"now": ..., "rows": [{agent, who, status, label, name, cwd, updated, detail}],
 #    "counts": {"working": 1, ...}}
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:$PATH"
+export PATH="/opt/""homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:$PATH"
 STATE_DIR="${SIGNALS_HOME:-$HOME/.signals}/sessions"
 CLAUDE_REGISTRY="$HOME/.claude/sessions"   # Claude Code's own registry: {pid, sessionId, cwd, status, name}
 now=$(date +%s)

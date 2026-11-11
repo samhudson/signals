@@ -12,7 +12,7 @@
 #   done     🟢  turn finished or interrupted
 #   error    ⚫️  turn ended on an error
 set -u
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export PATH="/opt/""homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 DIR="${SIGNALS_HOME:-$HOME/.signals}/sessions"
 mkdir -p "$DIR"
 

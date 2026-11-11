@@ -1,0 +1,63 @@
+#!/bin/bash
+# script/build-bottle vX.Y.Z SOURCE_TARBALL OUTDIR: the Homebrew bottle for a
+# release: Signals already built (Apple silicon and Intel), so `brew install`
+# pours it instead of compiling. No Command Line Tools needed on the user's Mac.
+#
+# Then it checks the bottle the way a user gets it: uninstall, point the formula
+# at the bottle, install, and confirm Homebrew poured it rather than building.
+#
+# It reinstalls signals with Homebrew and edits the tapped formula, so it only
+# runs in CI (or with SIGNALS_BOTTLE_ANYWAY=1).
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TAG="${1:?usage: script/build-bottle vX.Y.Z SOURCE_TARBALL OUTDIR}"
+TARBALL="$(cd "$(dirname "${2:?}")" && pwd)/$(basename "$2")"
+OUT="$(mkdir -p "${3:?}" && cd "$3" && pwd)"
+REPO="${SIGNALS_REPO:-samhudson/signals}"
+v="${TAG#v}"
+[ -n "${CI:-}${SIGNALS_BOTTLE_ANYWAY:-}" ] || { echo "build-bottle reinstalls signals with Homebrew; it runs in CI (or set SIGNALS_BOTTLE_ANYWAY=1)"; exit 1; }
+export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1
+
+brew tap samhudson/tap >/dev/null
+F="$(brew --repository samhudson/tap)/Formula/signals.rb"
+sha=$(shasum -a 256 "$TARBALL" | awk '{print $1}')
+
+# This repo's formula (packaging/homebrew), pointed at this release's source
+# and without a bottle.
+cp "$ROOT/packaging/homebrew/signals.rb" "$F"
+SOURCE="$(printf '  url "file://%s"\n  sha256 "%s"' "$TARBALL" "$sha")" \
+  perl -0pi -e 's/^  url .*?(?=^  license )/$ENV{SOURCE}\n/ms; s/^  bottle do\n.*?^  end\n\n?//ms' "$F"
+# A bottle is built for Apple silicon and Intel at once.
+grep -q SIGNALS_UNIVERSAL "$F" || perl -0pi -e 's/^  def install\n/  def install\n    ENV["SIGNALS_UNIVERSAL"] = "1" if build.bottle?\n/m' "$F"
+
+brew uninstall --force signals >/dev/null 2>&1 || true
+brew install --build-bottle samhudson/tap/signals
+(cd "$OUT" && brew bottle --json --no-rebuild --root-url="https://github.com/$REPO/releases/download/$TAG" samhudson/tap/signals)
+
+built=$(ls "$OUT"/signals--"$v".*.bottle.tar.gz)
+cellar=$(jq -r '.[].bottle.cellar' "$OUT"/signals--"$v".*.bottle.json)
+# One bottle for every Mac: nothing in it may depend on where Homebrew lives.
+[ "$cellar" = any_skip_relocation ] || { echo "::error::the bottle depends on its Homebrew location ($cellar)"; exit 1; }
+bottle="$OUT/signals-$v.all.bottle.tar.gz"   # the name Homebrew asks a GitHub release for
+mv "$built" "$bottle"; rm -f "$OUT"/signals--"$v".*.bottle.json
+bsha=$(shasum -a 256 "$bottle" | awk '{print $1}')
+(cd "$OUT" && shasum -a 256 "$(basename "$bottle")" > "$(basename "$bottle").sha256")
+
+# Both architectures are in the app.
+peek=$(mktemp -d); trap 'rm -rf "$peek"' EXIT
+tar -xzf "$bottle" -C "$peek"
+archs=$(lipo -archs "$peek/signals/$v/libexec/Signals.app/Contents/MacOS/Signals")
+[[ "$archs" == *arm64* && "$archs" == *x86_64* ]] || { echo "::error::the app is only built for: $archs"; exit 1; }
+earchs=$(lipo -archs "$peek/signals/$v/libexec/engine/signals-core")
+[[ "$earchs" == *arm64* && "$earchs" == *x86_64* ]] || { echo "::error::the engine is only built for: $earchs"; exit 1; }
+
+# Install it as a user would: from the bottle, with no building.
+brew uninstall --force signals >/dev/null
+BOTTLE="$(printf '  bottle do\n    root_url "file://%s"\n    sha256 cellar: :any_skip_relocation, all: "%s"\n  end\n' "$OUT" "$bsha")" \
+  perl -0pi -e 's/^(  license .*\n)/$1\n$ENV{BOTTLE}/m' "$F"
+brew install samhudson/tap/signals
+poured=$(brew info --json=v1 --installed signals | jq -r '.[0].installed[0].poured_from_bottle')
+[ "$poured" = true ] || { echo "::error::Homebrew built signals instead of pouring the bottle"; exit 1; }
+[ "$(signals --version)" = "$v" ] || { echo "::error::installed $(signals --version), expected $v"; exit 1; }
+brew test samhudson/tap/signals
+echo "bottle: $bottle ($archs; poured, not built)"

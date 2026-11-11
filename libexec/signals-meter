@@ -8,7 +8,7 @@
 #   openai     Billed spend (cost report)
 #   estimate   API-equivalent spend + per-session cost from local logs
 set -u
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export PATH="/opt/""homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 TB="${SIGNALS_HOME:-$HOME/.signals}/usage"
 CACHE="$TB/cache"
 LIBEXEC="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -193,23 +193,34 @@ if [ "$account" != null ] && [ -n "${reading:-}" ] && [ -z "${SIGNALS_NO_ESTIMAT
     | ($o.prev // null) as $p
     | ($r.r5 != null and $r.r5 > $r.as_of) as $live5
     | ($r.r7 != null and $r.r7 > $r.as_of) as $live7
-    # A new reading: learn from the change since the previous reading in the same
-    # window (only this Mac in between, as far as possible), else from the window so far.
+    # A new reading: measure the ratio, but only over enough activity to trust
+    # it. Early in a window a few dollars move the percentage a few whole points,
+    # so one early reading can be far off (Nov 9: 3.29%/$ at 6:02pm, 2.57%/$
+    # over the next hour). Measure from the previous reading in the same window
+    # when there is one, else the window so far.
     | (if $p == null or $p.as_of == $r.as_of then null
-       elif $live5 and (($p.r5 // 0) - ($r.r5 // 0) | fabs) < 120 and (($r.p5 // 0) - ($p.p5 // 0)) >= 3 and cost($p.as_of; $r.as_of) >= 1
-         then (($r.p5 - $p.p5) / cost($p.as_of; $r.as_of))
-       elif $live5 and ($r.p5 // 0) >= 5 and cost($r.r5 - 18000; $r.as_of) >= 1
-         then ($r.p5 / cost($r.r5 - 18000; $r.as_of))
+       elif $live5 and (($p.r5 // 0) - ($r.r5 // 0) | fabs) < 120 and (($r.p5 // 0) - ($p.p5 // 0)) >= 5 and cost($p.as_of; $r.as_of) >= 10
+         then {k: (($r.p5 - $p.p5) / cost($p.as_of; $r.as_of)), w: cost($p.as_of; $r.as_of)}
+       elif $live5 and ($r.p5 // 0) >= 10 and cost($r.r5 - 18000; $r.as_of) >= 15
+         then {k: ($r.p5 / cost($r.r5 - 18000; $r.as_of)), w: cost($r.r5 - 18000; $r.as_of)}
        else null end) as $c5
     | (if $p == null or $p.as_of == $r.as_of then null
-       elif $live7 and (($p.r7 // 0) - ($r.r7 // 0) | fabs) < 120 and (($r.p7 // 0) - ($p.p7 // 0)) >= 2 and cost($p.as_of; $r.as_of) >= 2
-         then (($r.p7 - $p.p7) / cost($p.as_of; $r.as_of))
+       elif $live7 and (($p.r7 // 0) - ($r.r7 // 0) | fabs) < 120 and (($r.p7 // 0) - ($p.p7 // 0)) >= 2 and cost($p.as_of; $r.as_of) >= 20
+         then {k: (($r.p7 - $p.p7) / cost($p.as_of; $r.as_of)), w: cost($p.as_of; $r.as_of)}
        else null end) as $c7
-    | { base: $base, prev: $r,
-        k5: (if near($c5; $base.k5) then $c5 elif near($o.k5; $base.k5) then $o.k5 else $base.k5 end),
-        k7: (if near($c7; $base.k7) then $c7 elif near($o.k7; $base.k7) then $o.k7 else $base.k7 end),
-        ignored: ([(if $c5 != null and (near($c5; $base.k5) | not) then {k5: $c5, at: $r.as_of} else empty end),
-                   (if $c7 != null and (near($c7; $base.k7) | not) then {k7: $c7, at: $r.as_of} else empty end)]
+    # Keep the last few measurements. The ratio is their median, weighted by the
+    # activity behind each, with the built-in ratio as a small prior: so no single
+    # reading takes over. Measurements over 2x off the built-in ratio are ignored
+    # (Claude used elsewhere makes a reading look far too high).
+    | def wmedian($xs): ($xs | sort_by(.k)) as $s | ($s | map(.w) | add) as $tw
+        | reduce $s[] as $x ({c: 0, k: null}; if .k == null then (.c += $x.w | if .c >= $tw / 2 then .k = $x.k else . end) else . end) | .k;
+      (($o.m5 // []) + (if $c5 != null and near($c5.k; $base.k5) then [$c5 + {at: $r.as_of}] else [] end) | .[-7:]) as $m5
+    | (($o.m7 // []) + (if $c7 != null and near($c7.k; $base.k7) then [$c7 + {at: $r.as_of}] else [] end) | .[-7:]) as $m7
+    | { base: $base, prev: $r, m5: $m5, m7: $m7,
+        k5: wmedian($m5 + [{k: $base.k5, w: 10}]),
+        k7: wmedian($m7 + [{k: $base.k7, w: 10}]),
+        ignored: ([(if $c5 != null and (near($c5.k; $base.k5) | not) then {k5: $c5.k, at: $r.as_of} else empty end),
+                   (if $c7 != null and (near($c7.k; $base.k7) | not) then {k7: $c7.k, at: $r.as_of} else empty end)]
                   + ($o.ignored // []) | .[0:10]) } as $k
     | cost($r.as_of; $now) as $since
     | (if $live5 and $r.r5 > $now then {pct: (($r.p5 // 0) + $k.k5 * $since), resets_at: $r.r5}
@@ -310,7 +321,7 @@ if [ "$mode" = anthropic ] || [ "$mode" = openai ]; then
 fi
 
 # Live session states from the Sessions part.
-live=$(cat "${SIGNALS_HOME:-$HOME/.signals}"/sessions/claude-*.json 2>/dev/null | jq -sc 'map({(.session_id): .status}) | add // {}' 2>/dev/null)
+live=$(cat "${SIGNALS_HOME:-$HOME/.signals}"/sessions/claude-*.json "${SIGNALS_HOME:-$HOME/.signals}"/sessions/codex-*.json 2>/dev/null | jq -sc 'map({(.session_id): .status}) | add // {}' 2>/dev/null)
 [ -z "$live" ] && live='{}'
 
 # ── Codex: the plan limits Codex saves in its own session logs ────────────────
@@ -342,13 +353,24 @@ if [ -d "$CX" ]; then
   fi
 fi
 
+# ── The ledger: every API call Claude Code and Codex made, by tool ────────────
+# The engine (signals-core) reads both agents' own logs into a numbers-only
+# ledger and sums this month by tool, priced at list prices, plus today's
+# sessions. Codex sessions join the list here.
+CORE="${SIGNALS_CORE:-$LIBEXEC/engine/signals-core}"
+ledger='null'
+if [ -z "${SIGNALS_NO_LEDGER:-}" ] && [ -x "$CORE" ]; then
+  ledger=$("$CORE" usage summary --json --month "$month" 2>/dev/null | jq -c 'select(.tools)' 2>/dev/null)
+  [ -z "$ledger" ] && ledger='null'
+fi
+
 # ── Aggregate ─────────────────────────────────────────────────────────────────
 pass_until=$(cat "$TB/pass" 2>/dev/null || echo 0)
 state=$(
   { cat "$CACHE"/claude-*.json 2>/dev/null || true; } | jq -s \
     --arg month "$month" --arg today "$today" --slurpfile cfg "$CONFIG" --arg mode "$mode" \
     --argjson now "$now" --argjson pass "${pass_until:-0}" --argjson api "$api_cost" \
-    --argjson account "$account" --argjson live "$live" --argjson codex "$codex" \
+    --argjson account "$account" --argjson live "$live" --argjson codex "$codex" --argjson ledger "$ledger" \
     --argjson mstart "$month_start" --argjson mdays "$days_in_month" '
     def r2: . * 100 | round / 100;
     . as $files
@@ -384,6 +406,11 @@ state=$(
        | map(. + { state: ($live[.sid] // (if $now - .last < 90 then "working" else "done" end)),
                    times: (if $avg_session and $avg_session > 0 and .cost / $avg_session >= 2
                            then (.cost / $avg_session * 10 | floor / 10) else null end) })
+       | map(. + {agent: "claude"})
+       # Codex sessions today, from the ledger.
+       | . + [ ($ledger.sessions // [])[] | select(.agent == "codex")
+               | {sid, cost: (.cost | r2), last, cwd: (.cwd // ""), title: null, agent: "codex", priced,
+                  state: ($live[.sid] // (if $now - .last < 90 then "working" else "done" end)), times: null} ]
        | sort_by(-.last) | .[0:6]) as $sessions
 
     # Plan state, from account usage.
@@ -408,6 +435,10 @@ state=$(
         over_at: $over_at,
         spike: $spike,
         sessions: $sessions,
+        by_tool: (if $ledger == null then null
+                  else {month: $ledger.month, label: $ledger.label, complete: $ledger.complete,
+                        tools: [ $ledger.tools[] | {agent, name, calls, cost: (.cost | r2), tokens: .tokens.total,
+                                                    unpriced: .unpriced.calls} ]} end),
         budget: $budget, warn: $warn,
         pct: (if $budget and $budget > 0 and $spend != null then ($spend / $budget * 100 | floor) else null end),
         status: (if $mode == "plan" then ($plan_state // "unknown")

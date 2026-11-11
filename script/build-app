@@ -2,6 +2,7 @@
 # Builds "Signals.app" (the menu bar app) from app/Signals.swift into libexec/
 # (or the folder given), with an icon drawn by the app itself.
 #   script/build-app [out-dir] [--icon]   (--icon redraws assets/AppIcon.icns)
+#   SIGNALS_UNIVERSAL=1 script/build-app  Apple silicon and Intel
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="${1:-$ROOT/libexec}"
@@ -10,8 +11,17 @@ VERSION="$(grep -m1 '^VERSION=' "$ROOT/bin/signals" | cut -d'"' -f2)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -O -parse-as-library -target "$(uname -m)-apple-macos13.0" \
-  "$ROOT/app/Signals.swift" -o "$APP/Contents/MacOS/Signals"
+# SIGNALS_UNIVERSAL=1 builds for Apple silicon and Intel in one app (the
+# Homebrew bottle); otherwise just for this Mac.
+if [ -n "${SIGNALS_UNIVERSAL:-}" ]; then
+  for arch in arm64 x86_64; do
+    swiftc -O -parse-as-library -target "$arch-apple-macos13.0" "$ROOT/app/Signals.swift" -o "$TMP/Signals-$arch"
+  done
+  lipo -create "$TMP/Signals-arm64" "$TMP/Signals-x86_64" -output "$APP/Contents/MacOS/Signals"
+else
+  swiftc -O -parse-as-library -target "$(uname -m)-apple-macos13.0" \
+    "$ROOT/app/Signals.swift" -o "$APP/Contents/MacOS/Signals"
+fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

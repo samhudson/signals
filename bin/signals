@@ -320,6 +320,8 @@ budget_prompt() {
 cmd_usage() {
   if [ "${1:-}" = "--text" ]; then export SIGNALS_UI=text; shift; local pick_mode=1; fi
   local mode="${1:-}"; [ $# -gt 0 ] && shift
+  # The ledger (every API call from Claude Code and Codex logs) lives in the engine.
+  case "$mode" in summary|ledger|verify|scan) run_core usage "$mode" "$@"; return ;; esac
   if [ -z "$mode" ] && [ -z "${pick_mode:-}" ]; then cmd_usage_status; return; fi
   ensure_config
   if [ -z "$mode" ]; then
@@ -392,10 +394,12 @@ cmd_usage_status() {
       "🚧 \(.plan.label)",
       (if .account == null then "  No usage reading yet. Run /usage in Claude Code, or: signals install --statusline"
        else
-         (if .account.session.active then "  5-hour \(.account.session.pct | floor)%" + (if .account.session.resets_at then " · resets \(.account.session.resets_at | at)" else "" end)
+         (if .account.estimated then "≈" else "" end) as $est
+         | (if .account.session.active then "  5-hour \($est)\(.account.session.pct | floor)%" + (if .account.session.resets_at then " · resets \(.account.session.resets_at | at)" else "" end)
           elif .account.outdated then "  Your limits have reset since the last reading (\(.account.as_of | day) \(.account.as_of | at)). Run /usage in Claude Code to update it."
           else "  5-hour window not started" end),
-         (if .account.weekly then "  This week \(.account.weekly.pct | floor)% · resets \(.account.weekly.resets_at | strflocaltime("%a %-I%p") | sub("AM$"; "am") | sub("PM$"; "pm"))" else empty end),
+         (if .account.weekly then "  This week \($est)\(.account.weekly.pct | floor)% · resets \(.account.weekly.resets_at | strflocaltime("%a %-I%p") | sub("AM$"; "am") | sub("PM$"; "pm"))" else empty end),
+         (if .account.estimated then "  ≈ estimated from activity on this Mac since the last reading (\(.account.as_of | day) \(.account.as_of | at)); /usage in Claude Code gives the exact figure" else empty end),
          (if .account.credits.enabled and .status != "credits" then "  💳 Usage credits · \(.account.credits.used | money) used"
           elif (.account.credits.enabled | not) then "  Usage credits off" + (if .account.credits.reason == "out_of_credits" then " · out of credits" else "" end)
           else empty end),
@@ -411,14 +415,30 @@ cmd_usage_status() {
               "  Today \(.today_spend | money)" end),
         (if .projected and .status != "over" then "  On pace for \(.projected | money)" else empty end),
         (if .status == "over" then "  ⛔️ Over budget" + (if .pass_until then " · 🎫 pass until \(.pass_until | strflocaltime("%H:%M"))" else "" end) else empty end),
-        (if (.sessions | length) > 0 and .mode != "openai" then "  Sessions today:", (.sessions[] | "    \((.title // "Session") | .[0:40])  \(.cost | money)" + (if .times then " ⚠️ \(.times)x" else "" end)) else empty end)
+        (if (.sessions | length) > 0 and .mode != "openai" then "  Sessions today:", (.sessions[] | "    \((if .agent == "codex" then "Codex · " else "" end) + ((.title // (.cwd // "" | split("/") | last | select(. != "")) // "Session") | .[0:40]))  \(.cost | money)" + (if .times then " ⚠️ \(.times)x" else "" end)) else empty end)
     end,
     (if .codex then
        "🚧 Codex · \(.codex.plan)",
        (if .codex.session.active then "  5-hour \(.codex.session.pct | floor)% · resets \(.codex.session.resets_at | at)" else "  5-hour window not started" end),
        (if .codex.weekly then "  This week \(.codex.weekly.pct | floor)%" else empty end),
        (if .codex.status == "blocked" then "  ⛔️ Limit reached" elif .codex.status == "warn" then "  ⚠️ Getting close" else empty end)
-     else empty end)'
+     else empty end),
+    # Every API call, from the logs the agents keep, by tool. On a plan, no money.
+    (def tok: if . >= 1000000 then "\(. / 100000 | floor / 10)M" elif . >= 10000 then "\(. / 1000 | floor)K" else tostring end;
+     . as $root
+     | if (.by_tool.tools // []) | length > 0 then
+         "📊 This month by tool" + (if $root.mode == "plan" then "" else ", at API prices" end),
+         (.by_tool.tools[] | "  \(.name): \(.calls) calls, \(.tokens | tok) tokens"
+            + (if $root.mode == "plan" then "" else " · \(.cost | money)" end)
+            + (if .unpriced > 0 then " (\(.unpriced) not priced yet)" else "" end))
+       else empty end)'
+}
+
+# run_core runs the engine (signals-core), built into libexec/engine.
+run_core() {
+  local core="${SIGNALS_CORE:-$LIBEXEC/engine/signals-core}"
+  [ -x "$core" ] || die "The usage engine isn't installed. From a checkout: script/build-core"
+  "$core" "$@"
 }
 
 cmd_disconnect() {

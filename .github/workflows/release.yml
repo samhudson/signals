@@ -29,7 +29,7 @@ concurrency:
 jobs:
   release:
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
@@ -47,16 +47,16 @@ jobs:
           base="${TAG#v}"; base="${base%%-rc.*}"
           [ "$code" = "$base" ] || { echo "::error::bin/$NAME says $code but the tag is $TAG"; exit 1; }
 
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: core/go.mod
+          cache: false
       - name: Tests
         run: ./test/run.sh
 
       - name: Build the menu bar app (as brew install does)
         run: script/build-app "$RUNNER_TEMP/app"
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: core/go.mod
-          cache: false
 
       - name: Linux and Windows downloads
         run: script/build-platforms "$TAG" "$RUNNER_TEMP/dist"
@@ -69,6 +69,11 @@ jobs:
           script/release-notes "$TAG" > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
 
+      - name: Homebrew bottle (prebuilt app and engine, Apple silicon and Intel)
+        run: |
+          v="${TAG#v}"
+          script/build-bottle "$TAG" "$RUNNER_TEMP/$NAME-$v.tar.gz" "$RUNNER_TEMP/bottle"
+
       - name: GitHub Release
         if: env.DRY_RUN != 'true'
         env:
@@ -76,7 +81,7 @@ jobs:
         run: |
           v="${TAG#v}"; pre=""; [[ "$TAG" == *-rc.* ]] && pre="--prerelease"
           gh release create "$TAG" --verify-tag $pre --title "$NAME $v" --notes-file "$RUNNER_TEMP/notes.md" \
-            "$RUNNER_TEMP/$NAME-$v.tar.gz" "$RUNNER_TEMP/$NAME-$v.tar.gz.sha256" "$RUNNER_TEMP"/dist/*
+            "$RUNNER_TEMP/$NAME-$v.tar.gz" "$RUNNER_TEMP/$NAME-$v.tar.gz.sha256" "$RUNNER_TEMP"/dist/* "$RUNNER_TEMP"/bottle/*
 
       - name: Homebrew tap
         if: env.DRY_RUN != 'true' && !contains(env.TAG, '-rc.')
@@ -104,8 +109,14 @@ jobs:
             echo "::notice::The tap isn't public yet, so the install check is skipped."; exit 0
           fi
           brew tap samhudson/tap
+          tapped=$(brew info --json=v1 samhudson/tap/signals | jq -r '.[0].versions.stable')
+          if [ "$tapped" != "${TAG#v}" ]; then
+            echo "::notice::The tap still has $tapped (no deploy key to update it from here). Run script/update-tap $TAG, then re-run this job."; exit 0
+          fi
           brew install samhudson/tap/signals
           installed=$(signals --version)
           [ "$installed" = "${TAG#v}" ] || { echo "::error::installed $installed, expected ${TAG#v}"; exit 1; }
+          poured=$(brew info --json=v1 --installed signals | jq -r '.[0].installed[0].poured_from_bottle')
+          [ "$poured" = true ] || { echo "::error::Homebrew built signals instead of pouring the bottle"; exit 1; }
           brew test samhudson/tap/signals
-          echo "Installed signals $installed from the tap."
+          echo "Installed signals $installed from the tap's bottle."

@@ -9,6 +9,7 @@ CLI="$ROOT/bin/signals"
 HOOK="$ROOT/libexec/signals-hook"
 export HOME="$(mktemp -d)"
 export SIGNALS_NO_APP=1 SIGNALS_NO_NOTIFY=1 SIGNALS_TEST_KEYS="$HOME/keys" SIGNALS_SKIP_VERIFY=1 SIGNALS_NO_PROMPT=1
+export SIGNALS_NO_LEDGER=1   # the ledger has its own suite (ledger.sh)
 trap 'rm -rf "$HOME"' EXIT
 mkdir -p "$HOME/bin"; printf '#!/bin/sh\nexit 1\n' > "$HOME/bin/osascript"; chmod +x "$HOME/bin/osascript"
 export PATH="$HOME/bin:$PATH"
@@ -127,12 +128,24 @@ check "an estimate never says the limit was hit (99% at most)" "99 ok" "$(meter 
 limit_hit 60
 check "  ...unless Claude Code was refused for a limit in that window" "100 blocked" "$(meter '"\(.account.session.pct) \(.status)"')"
 : > "$EST"; rm -f "$U/calibration.json"; saved 20 10 1200; meter . >/dev/null
-activity 600 400000; saved 80 10 60
-check "a reading 6x off the built-in ratio (Claude used elsewhere) is ignored" "2.5 1" \
+activity 600 1200000; saved 99 10 60
+check "a reading over 2x off the built-in ratio (Claude used elsewhere) is ignored" "2.5 1" \
   "$(meter . >/dev/null; jq -r '"\(.k5) \(.ignored | length)"' "$U/calibration.json")"
 : > "$EST"; rm -f "$U/calibration.json"; saved 20 10 1200; meter . >/dev/null
-activity 600 400000; saved 32 10 60
-check "  ...a close one refines it (+12 points for \$4)" 3 "$(meter . >/dev/null; jq -r .k5 "$U/calibration.json")"
+activity 600 1600000; saved 68 10 60
+check "  ...a close one refines it (+48 points for \$16)" 3 "$(meter . >/dev/null; jq -r .k5 "$U/calibration.json")"
+: > "$EST"; rm -f "$U/calibration.json"; saved 20 10 1200; meter . >/dev/null
+activity 600 300000; saved 35 10 60
+check "  ...but a reading with little activity behind it (\$3) teaches nothing" 2.5 "$(meter . >/dev/null; jq -r .k5 "$U/calibration.json")"
+# Nov 9: a 29% reading 30 minutes into a window, after \$8.81 of activity (3.29%/\$), then \$23.71 more.
+# The real reading an hour later was 90%. Learning from that early reading said 99%.
+: > "$EST"; rm -f "$U/calibration.json"
+activity 4800 881000; saved 29 10 3600 12600; meter . >/dev/null
+activity 1800 2371000
+check "an early reading isn't trusted: 29 + 2.5 x 23.71 = 88 (the real reading was 90, not 99)" 88 "$(meter '.account.session.pct')"
+saved 90 10 60 12600
+check "  ...the next reading teaches the ratio over the hour between them: 61 points for \$23.71" 2.57 \
+  "$(meter . >/dev/null; jq -r '.k5 * 100 | round / 100' "$U/calibration.json")"
 : > "$EST"; rm -f "$U/calibration.json"; saved 20 10 600
 jq '.oauthAccount = {organizationType: "claude_max", organizationRateLimitTier: "default_claude_max_20x"}' "$HOME/.claude.json" > "$HOME/c.json" && mv "$HOME/c.json" "$HOME/.claude.json"
 check "Max 20x: a twentieth of the Pro ratio" 0.125 "$(meter . >/dev/null; jq -r .base.k5 "$U/calibration.json")"
@@ -241,12 +254,15 @@ case "\$*" in
   *) echo "\${VISIBILITY:-public}" ;;
 esac
 STUBEOF
-printf '#!/bin/sh\necho "%s  signals-9.9.9.tar.gz"\n' "$SHA" > "$STUB/curl"
+printf '#!/bin/sh\ncase "$*" in *bottle*) [ -z "$NO_BOTTLE" ] || exit 22 ;; esac\necho "%s  signals-9.9.9.tar.gz"\n' "$SHA" > "$STUB/curl"
 chmod +x "$STUB/gh" "$STUB/curl"
 out=$(PATH="$STUB:$PATH" "$ROOT/script/update-tap" v9.9.9 --print)
 check "public: the formula downloads the release's tarball (counted by GitHub)" 1 \
   "$(grep -c 'url "https://github.com/samhudson/signals/releases/download/v9.9.9/signals-9.9.9.tar.gz"' <<<"$out")"
-check "  ...with the checksum the release publishes" 1 "$(grep -c "sha256 \"$SHA\"" <<<"$out")"
+check "  ...with the checksum the release publishes" 1 "$(grep -c "^  sha256 \"$SHA\"" <<<"$out")"
+check "  ...and the prebuilt bottle from the release, for every Mac" "1 1" \
+  "$(grep -c 'root_url "https://github.com/samhudson/signals/releases/download/v9.9.9"' <<<"$out") $(grep -c "sha256 cellar: :any_skip_relocation, all: \"$SHA\"" <<<"$out")"
+check "  ...no bottle section when the release has none" 0 "$(NO_BOTTLE=1 PATH="$STUB:$PATH" "$ROOT/script/update-tap" v9.9.9 --print | grep -c 'bottle do')"
 # The real formula, in a throwaway local tap: update-tap rewrites it and commits.
 TAPDIR="$HOME/tap.git"; git init -q --bare -b main "$TAPDIR"; W="$HOME/tapwork"; git clone -q "$TAPDIR" "$W" 2>/dev/null
 mkdir -p "$W/Formula"
@@ -255,8 +271,15 @@ git -C "$W" add -A; git -C "$W" -c user.name=t -c user.email=t@t commit -qm init
 PATH="$STUB:$PATH" SIGNALS_TAP_URL="$TAPDIR" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t "$ROOT/script/update-tap" v9.9.9 >/dev/null 2>&1
 f=$(git --git-dir="$TAPDIR" show main:Formula/signals.rb)
 check "  ...tap formula rewritten to the counted tarball" "1 1 0" \
-  "$(grep -c 'releases/download/v9.9.9/signals-9.9.9.tar.gz' <<<"$f") $(grep -c "$SHA" <<<"$f") $(grep -c 'revision:' <<<"$f")"
+  "$(grep -c 'releases/download/v9.9.9/signals-9.9.9.tar.gz' <<<"$f") $(grep -c "^  sha256 \"$SHA\"" <<<"$f") $(grep -c 'revision:' <<<"$f")"
 check "  ...rest of the formula kept" 1 "$(grep -c '^  license "MIT"' <<<"$f")"
+check "  ...the tap gets this repo's formula: it builds the engine too" 1 "$(grep -c 'script/build-core' <<<"$f")"
+check "  ...bottle section right after the license" "bottle do" "$(grep -A2 '^  license' <<<"$f" | sed -n 3p | xargs)"
+git -C "$W" pull -q origin main 2>/dev/null; git -C "$W" tag -f v9.9.9 >/dev/null
+PATH="$STUB:$PATH" SIGNALS_TAP_URL="$TAPDIR" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t "$ROOT/script/update-tap" v9.9.9 >/dev/null 2>&1
+check "  ...running it again doesn't add a second bottle" 1 "$(git --git-dir="$TAPDIR" show main:Formula/signals.rb | grep -c 'bottle do')"
+NO_BOTTLE=1 PATH="$STUB:$PATH" SIGNALS_TAP_URL="$TAPDIR" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t "$ROOT/script/update-tap" v9.9.9 >/dev/null 2>&1
+check "  ...and a release without one drops the old bottle" 0 "$(git --git-dir="$TAPDIR" show main:Formula/signals.rb | grep -c 'bottle do')"
 check "  ...and committed as the new version" "signals 9.9.9" "$(git --git-dir="$TAPDIR" log -1 --format=%s main)"
 C="$HOME/clone"; git clone -q "$ROOT" "$C" 2>/dev/null; cp "$ROOT/script/update-tap" "$C/script/"; git -C "$C" tag v9.9.8
 out=$(VISIBILITY=private PATH="$STUB:$PATH" "$C/script/update-tap" v9.9.8 --print)
@@ -266,24 +289,25 @@ check "release candidates never go to the tap" 1 "$(PATH="$STUB:$PATH" "$ROOT/sc
 jq -n '[{tag_name: "v1.1.0", published_at: "2026-11-02T00:00:00Z", prerelease: false,
          assets: [{name: "signals-1.1.0.tar.gz", download_count: 12}, {name: "signals-1.1.0.tar.gz.sha256", download_count: 12},
                   {name: "signals-1.1.0-linux-amd64.tar.gz", download_count: 4}, {name: "signals-1.1.0-windows-amd64.zip", download_count: 3},
-                  {name: "SHA256SUMS", download_count: 9}]},
+                  {name: "SHA256SUMS", download_count: 9}, {name: "signals-1.1.0.all.bottle.tar.gz", download_count: 6},
+                  {name: "signals-1.1.0.all.bottle.tar.gz.sha256", download_count: 6}]},
         {tag_name: "v1.1.0-rc.1", published_at: "2026-11-01T00:00:00Z", prerelease: true,
          assets: [{name: "signals-1.1.0-rc.1.tar.gz", download_count: 2}]},
         {tag_name: "v1.0.0", published_at: "2026-10-30T00:00:00Z", prerelease: false,
          assets: [{name: "signals-1.0.0.tar.gz", download_count: 30}, {name: "Signals-1.0.0.dmg", download_count: 5}]}]' > "$HOME/releases.json"
 dl=$(PATH="$STUB:$PATH" "$ROOT/script/downloads" --json)
-check "downloads: per release" "12 2 30" "$(jq -r '[.releases[].downloads] | join(" ")' <<<"$dl")"
-check "  ...checksum fetches aren't counted" 12 "$(jq -r '.releases[0].downloads' <<<"$dl")"
-check "  ...total counts final releases only" 42 "$(jq -r .total_downloads <<<"$dl")"
-check "  ...installs are about half (Homebrew checks, then downloads)" "6 21" "$(jq -r '"\(.releases[0].installs) \(.total_installs)"' <<<"$dl")"
+check "downloads: per release" "18 2 30" "$(jq -r '[.releases[].downloads] | join(" ")' <<<"$dl")"
+check "  ...the bottle and the source both count; checksum fetches don't" 18 "$(jq -r '.releases[0].downloads' <<<"$dl")"
+check "  ...total counts final releases only" 48 "$(jq -r .total_downloads <<<"$dl")"
+check "  ...installs are about half (Homebrew checks, then downloads)" "9 24" "$(jq -r '"\(.releases[0].installs) \(.total_installs)"' <<<"$dl")"
 check "  ...other files (like a future .dmg) counted separately" 5 "$(jq -r '.releases[2].other' <<<"$dl")"
 check "  ...works without traffic access" null "$(jq -r .views_14d <<<"$dl")"
 check "  ...Linux and Windows downloads counted on their own" "4 3 0" "$(jq -r '.releases[0] | "\(.linux) \(.windows) \(.other)"' <<<"$dl")"
-check "  ...and not as Homebrew installs" 12 "$(jq -r '.releases[0].downloads' <<<"$dl")"
-check "  ...and prints a table" 1 "$(PATH="$STUB:$PATH" "$ROOT/script/downloads" | grep -c 'Total (final releases): 42 Homebrew downloads (about 21 installs), 4 Linux, 3 Windows')"
+check "  ...and not as Homebrew installs" 18 "$(jq -r '.releases[0].downloads' <<<"$dl")"
+check "  ...and prints a table" 1 "$(PATH="$STUB:$PATH" "$ROOT/script/downloads" | grep -c 'Total (final releases): 48 Homebrew downloads (about 24 installs), 4 Linux, 3 Windows')"
 
 echo "release"
-check "no em dashes in shipped files" 0 "$(cat "$ROOT"/bin/* "$ROOT"/libexec/signals-* "$ROOT"/app/*.swift "$ROOT"/README.md "$ROOT"/assets/*.svg 2>/dev/null | grep -c '—')"
+check "no em dashes in shipped files" 0 "$(cat "$ROOT"/bin/* "$ROOT"/libexec/signals-* "$ROOT"/libexec/pricing.json "$ROOT"/app/*.swift "$ROOT"/README.md "$ROOT"/assets/*.svg "$ROOT"/core/*/*.go "$ROOT"/core/*/*/*.go 2>/dev/null | grep -c '—')"
 check "no SwiftBar in the app or engine (the CLI mentions it only to move over)" 0 "$(cat "$ROOT"/libexec/signals-* "$ROOT"/app/*.swift 2>/dev/null | grep -ci 'swiftbar')"
 check "no old product names in the app or engine" 0 "$(cat "$ROOT"/libexec/signals-* "$ROOT"/app/*.swift 2>/dev/null | grep -ciE 'tollbooth|trafficlight')"
 if tag=$(git -C "$ROOT" describe --tags --exact-match 2>/dev/null); then

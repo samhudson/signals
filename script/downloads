@@ -4,7 +4,8 @@
 # Every `brew install` and `brew upgrade` downloads the tarball attached to a
 # GitHub Release, and GitHub counts each request for it. Homebrew checks the
 # file's headers before downloading it, and GitHub counts that check too, so
-# one install shows up as about 2; "installs" is the count halved. The Linux
+# one install shows up as about 2 (from the prebuilt bottle, or the source
+# tarball for older releases); "installs" is the count halved. The Linux
 # and Windows downloads are counted separately. Repo views and clones (last 14
 # days, as GitHub keeps them) are shown too when your login can see them.
 #   script/downloads           a table per release, with totals
@@ -21,10 +22,10 @@ report=$(jq -sc --argjson views "$views" --argjson clones "$clones" --arg repo "
   (add // []) as $r
   | { repo: $repo, at: $at,
       releases: [ $r[] | {tag: .tag_name, published: .published_at, prerelease: .prerelease,
-                          downloads: ([.assets[] | select(.name | test("^signals-[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?\\.tar\\.gz$")) | .download_count] | add // 0),
+                          downloads: ([.assets[] | select(.name | test("^signals-[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?(\\.all\\.bottle)?\\.tar\\.gz$")) | .download_count] | add // 0),
                           linux: ([.assets[] | select(.name | test("-linux-")) | .download_count] | add // 0),
                           windows: ([.assets[] | select(.name | test("-windows-")) | .download_count] | add // 0),
-                          other: ([.assets[] | select(.name | test("^signals-[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?\\.tar\\.gz$|-linux-|-windows-|sha256|SHA256SUMS") | not) | .download_count] | add // 0)} ],
+                          other: ([.assets[] | select(.name | test("^signals-[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?(\\.all\\.bottle)?\\.tar\\.gz$|-linux-|-windows-|sha256|SHA256SUMS") | not) | .download_count] | add // 0)} ],
       views_14d: ($views | if . then {count, uniques} else null end),
       clones_14d: ($clones | if . then {count, uniques} else null end) }
   | .releases |= map(. + {installs: (.downloads / 2 | ceil)})
