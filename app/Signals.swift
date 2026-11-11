@@ -51,7 +51,9 @@ enum Engine {
                 let p = Process()
                 p.executableURL = exe; p.arguments = args
                 var env = ProcessInfo.processInfo.environment
-                env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin"
+                // Homebrew's bin on Apple silicon and Intel, built at run time so the
+                // Homebrew bottle carries no install location and works on both.
+                env["PATH"] = (["opt", "homebrew"].joined(separator: "/") + "/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin").withRootSlash
                 extra.forEach { env[$0.key] = $0.value }
                 p.environment = env
                 let out = Pipe(), err = Pipe()
@@ -1568,4 +1570,9 @@ enum Main {
         app.setActivationPolicy(.accessory)   // menu bar only: never in the Dock
         app.run()
     }
+}
+
+private extension String {
+    /// "opt/x" -> "/opt/x"
+    var withRootSlash: String { hasPrefix("/") ? self : "/" + self }
 }

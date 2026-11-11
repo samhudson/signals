@@ -35,7 +35,7 @@ brew install --build-bottle samhudson/tap/signals
 (cd "$OUT" && brew bottle --json --no-rebuild --root-url="https://github.com/$REPO/releases/download/$TAG" samhudson/tap/signals)
 
 built=$(ls "$OUT"/signals--"$v".*.bottle.tar.gz)
-cellar=$(jq -r '.[].bottle.tags[].cellar' "$OUT"/signals--"$v".*.bottle.json)
+cellar=$(jq -r '.[].bottle.cellar' "$OUT"/signals--"$v".*.bottle.json)
 # One bottle for every Mac: nothing in it may depend on where Homebrew lives.
 [ "$cellar" = any_skip_relocation ] || { echo "::error::the bottle depends on its Homebrew location ($cellar)"; exit 1; }
 bottle="$OUT/signals-$v.all.bottle.tar.gz"   # the name Homebrew asks a GitHub release for

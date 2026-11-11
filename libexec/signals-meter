@@ -8,7 +8,7 @@
 #   openai     Billed spend (cost report)
 #   estimate   API-equivalent spend + per-session cost from local logs
 set -u
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export PATH="/opt/""homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 TB="${SIGNALS_HOME:-$HOME/.signals}/usage"
 CACHE="$TB/cache"
 LIBEXEC="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"

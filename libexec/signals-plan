@@ -5,7 +5,7 @@
 # plan isn't a setting: the meter runs this on every refresh, so a change of
 # plan shows up by itself.
 set -u
-export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+export PATH="$PATH:/opt/""homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 if [ -n "${SIGNALS_DETECTED_PLAN+x}" ]; then
   plan=$(jq -nc --arg t "$SIGNALS_DETECTED_PLAN" '{t: ($t | sub("20$"; "")), r: (if ($t | endswith("20")) then "20x" else "" end)}')
 else

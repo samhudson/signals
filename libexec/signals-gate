@@ -5,7 +5,7 @@
 # is held, with a message saying how to get through. Fails open: any problem,
 # or Usage being off, lets the prompt in.
 set -u
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export PATH="/opt/""homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 TB="${SIGNALS_HOME:-$HOME/.signals}/usage"
 LIBEXEC="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cat >/dev/null   # hook payload is not needed

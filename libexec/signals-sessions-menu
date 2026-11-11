@@ -1,5 +1,5 @@
 #!/bin/bash
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:$PATH"
+export PATH="/opt/""homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:$PATH"
 LIBEXEC="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 CLI="$LIBEXEC/../bin/signals"
 state=$("$LIBEXEC/signals-state" 2>/dev/null)

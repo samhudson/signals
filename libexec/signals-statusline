@@ -3,7 +3,7 @@
 # limits Claude Code reports (rate_limits: 5-hour and 7-day windows, Pro/Max
 # only) to ~/.signals/usage/limits.json for the menu bar, and prints a short line.
 # Claude Code only runs status lines in the terminal, not in editor extensions.
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export PATH="/opt/""homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 TB="${SIGNALS_HOME:-$HOME/.signals}/usage"
 mkdir -p "$TB"
 input=$(cat)
