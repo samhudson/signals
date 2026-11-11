@@ -2,6 +2,30 @@
 
 All notable changes, newest first. Versions follow [Semantic Versioning](https://semver.org).
 
+## [1.2.0] - 2026-11-10
+
+### Features
+
+- Homebrew bottle with the engine, so brew install needs no compiler
+- Codex in Usage on the Mac: the month by tool and Codex sessions
+- signals usage summary, ledger and verify
+- the ledger: per-call records by day, monthly totals, and incremental scans
+- read per-call usage from Claude Code transcripts and Codex session logs
+- list prices for Claude, OpenAI and Google models, priced in Go
+- keep Claude plan usage current without /usage
+
+### Fixes
+
+- keep the Homebrew bottle location-independent
+- build-bottle is executable
+- learn the plan ratio only from readings with enough activity, as a weighted median; mark estimates with ≈
+- say when a Claude usage reading predates a limit reset, instead of 'not started'
+- on Linux without a desktop, say there's no tray instead of claiming it started
+
+### Other
+
+- Usage ledger and Homebrew bottle
+
 ## [1.1.0] - 2026-11-07
 
 Signals now runs on Linux and Windows (beta): session lights in the system tray, for the same agents as on macOS.
