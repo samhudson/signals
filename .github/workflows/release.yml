@@ -109,7 +109,9 @@ jobs:
             echo "::notice::The tap isn't public yet, so the install check is skipped."; exit 0
           fi
           brew tap samhudson/tap
-          tapped=$(brew info --json=v1 samhudson/tap/signals | jq -r '.[0].versions.stable')
+          # Read the version from the tap's file: Homebrew won't load an untrusted
+          # tap's formula for brew info, while brew install by full name trusts it.
+          tapped=$(sed -n 's|.*/releases/download/v\([^/]*\)/signals-.*|\1|p' "$(brew --repository samhudson/tap)/Formula/signals.rb" | head -1)
           if [ "$tapped" != "${TAG#v}" ]; then
             echo "::notice::The tap still has $tapped (no deploy key to update it from here). Run script/update-tap $TAG, then re-run this job."; exit 0
           fi
