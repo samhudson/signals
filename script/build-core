@@ -8,5 +8,15 @@ OUT="${1:-$ROOT/libexec/engine}"
 VERSION="$(grep -m1 '^VERSION=' "$ROOT/bin/signals" | cut -d'"' -f2)"
 mkdir -p "$OUT"
 cd "$ROOT/core"
-CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$OUT/signals-core" ./cmd/signals-core
+flags="-s -w -X main.version=$VERSION"
+if [ -n "${SIGNALS_UNIVERSAL:-}" ]; then
+  # Apple silicon and Intel in one binary (the Homebrew bottle).
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+  for arch in arm64 amd64; do
+    CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "$flags" -o "$TMP/signals-core-$arch" ./cmd/signals-core
+  done
+  lipo -create "$TMP/signals-core-arm64" "$TMP/signals-core-amd64" -output "$OUT/signals-core"
+else
+  CGO_ENABLED=0 go build -trimpath -ldflags "$flags" -o "$OUT/signals-core" ./cmd/signals-core
+fi
 echo "built: $OUT/signals-core"

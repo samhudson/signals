@@ -26,11 +26,18 @@ if [ "$visibility" = public ]; then
   sha=$(curl -fsSL "$asset.sha256" | awk '{print $1}')
   [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "no checksum for $asset (is the release published?)"; exit 1; }
   source=$(printf '  url "%s"\n  sha256 "%s"' "$asset" "$sha")
+  # The prebuilt app, when the release has one: brew install pours it instead
+  # of compiling (no Command Line Tools needed).
+  bsha=$(curl -fsSL "https://github.com/$REPO/releases/download/$TAG/$NAME-$v.all.bottle.tar.gz.sha256" 2>/dev/null | awk '{print $1}' || true)
+  if [[ "$bsha" =~ ^[0-9a-f]{64}$ ]]; then
+    bottle=$(printf '  bottle do\n    root_url "https://github.com/%s/releases/download/%s"\n    sha256 cellar: :any_skip_relocation, all: "%s"\n  end' "$REPO" "$TAG" "$bsha")
+  fi
 else
   rev=$(git rev-parse "$TAG^{commit}")
   source=$(printf '  url "https://github.com/%s.git",\n      tag:      "%s",\n      revision: "%s"' "$REPO" "$TAG" "$rev")
 fi
-if [ $PRINT = 1 ]; then echo "$source"; exit 0; fi
+bottle="${bottle:-}"
+if [ $PRINT = 1 ]; then echo "$source"; [ -z "$bottle" ] || echo "$bottle"; exit 0; fi
 
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 if [ -n "${SIGNALS_TAP_URL:-}" ]; then url="$SIGNALS_TAP_URL"   # tests: a local tap
@@ -44,8 +51,13 @@ else url="https://github.com/$TAP.git"; fi
 
 git clone -q --depth 1 --branch main "$url" "$work/tap"
 formula="$work/tap/Formula/$NAME.rb"
+# The formula is kept in this repo (packaging/homebrew), versioned with the code.
+[ -f "packaging/homebrew/$NAME.rb" ] && cp "packaging/homebrew/$NAME.rb" "$formula"
 # Replace everything from the url line up to (not including) the license line.
 SOURCE="$source" perl -0pi -e 's/^  url .*?(?=^  license )/$ENV{SOURCE}\n/ms' "$formula"
+# The bottle goes after the license line; an older one is replaced (or dropped).
+perl -0pi -e 's/^  bottle do\n.*?^  end\n\n?//ms' "$formula"
+[ -z "$bottle" ] || BOTTLE="$bottle" perl -0pi -e 's/^(  license .*\n)/$1\n$ENV{BOTTLE}\n/m' "$formula"
 grep -q "$TAG\|$v.tar.gz" "$formula" || { echo "formula update failed"; exit 1; }
 
 cd "$work/tap"
