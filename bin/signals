@@ -394,12 +394,10 @@ cmd_usage_status() {
       "🚧 \(.plan.label)",
       (if .account == null then "  No usage reading yet. Run /usage in Claude Code, or: signals install --statusline"
        else
-         (if .account.estimated then "≈" else "" end) as $est
-         | (if .account.session.active then "  5-hour \($est)\(.account.session.pct | floor)%" + (if .account.session.resets_at then " · resets \(.account.session.resets_at | at)" else "" end)
+         (if .account.session.active then "  5-hour \(.account.session.pct | floor)%" + (if .account.session.resets_at then " · resets \(.account.session.resets_at | at)" else "" end)
           elif .account.outdated then "  Your limits have reset since the last reading (\(.account.as_of | day) \(.account.as_of | at)). Run /usage in Claude Code to update it."
           else "  5-hour window not started" end),
-         (if .account.weekly then "  This week \($est)\(.account.weekly.pct | floor)% · resets \(.account.weekly.resets_at | strflocaltime("%a %-I%p") | sub("AM$"; "am") | sub("PM$"; "pm"))" else empty end),
-         (if .account.estimated then "  ≈ estimated from activity on this Mac since the last reading (\(.account.as_of | day) \(.account.as_of | at)); /usage in Claude Code gives the exact figure" else empty end),
+         (if .account.weekly then "  This week \(.account.weekly.pct | floor)% · resets \(.account.weekly.resets_at | strflocaltime("%a %-I%p") | sub("AM$"; "am") | sub("PM$"; "pm"))" else empty end),
          (if .account.credits.enabled and .status != "credits" then "  💳 Usage credits · \(.account.credits.used | money) used"
           elif (.account.credits.enabled | not) then "  Usage credits off" + (if .account.credits.reason == "out_of_credits" then " · out of credits" else "" end)
           else empty end),
