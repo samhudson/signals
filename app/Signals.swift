@@ -458,6 +458,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
     var lastUsage = Date.distantPast
     var watcher: DispatchSourceFileSystemObject?
     var timers: [Timer] = []
+    var nextReading: Timer?
     var pending = false
     var appearance: NSKeyValueObservation?
     let openSettings: (String?) -> Void
@@ -529,7 +530,20 @@ final class MenuBar: NSObject, NSMenuDelegate {
             usage = u
             redraw()
             if let n = u.notify { notify(n) }
+            scheduleNextReading(u)
         }
+    }
+
+    /// Claude Code saves a new plan reading at most once a minute, so check
+    /// again the moment this one turns 61 seconds old instead of at the next
+    /// regular check (up to 30 s later). If you're idle then, signals-refresh
+    /// skips it and the regular checks carry on.
+    func scheduleNextReading(_ u: Usage) {
+        nextReading?.invalidate(); nextReading = nil
+        guard u.mode == "plan", let t = u.account?.as_of else { return }
+        let wait = t + 61 - Date().timeIntervalSince1970
+        guard wait > 0, wait <= 61 else { return }
+        nextReading = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in Task { @MainActor in self?.refreshUsage() } }
     }
 
     func redraw() {
