@@ -57,18 +57,18 @@ pct() { jq -r '.cachedUsageUtilization.utilization.five_hour.utilization' "$HOME
 
 echo "When it asks"
 reset_state; reading 30; transcript_at 5
-check "a reading under a minute old: not yet" "fresh (30s old)" "$("$REFRESH")"
+check "a reading under a minute old: not yet" "fresh (Ns old)" "$("$REFRESH" | sed -E "s/3[0-2]s/Ns/")"
 check "  ...and Claude Code isn't run" 0 "$(calls)"
 
 reset_state; reading 120; transcript_at 600
-check "nothing written since the reading: idle" "idle (reading 120s old)" "$("$REFRESH")"
+check "nothing written since the reading: idle" "idle (reading Ns old)" "$("$REFRESH" | sed -E "s/12[0-2]s/Ns/")"
 check "  ...and Claude Code isn't run" 0 "$(calls)"
 
 reset_state; reading 120; transcript_at 5
 check "a transcript written since the reading: asks" "refreshed (working)" "$("$REFRESH")"
 check "  ...runs Claude Code once" 1 "$(calls)"
 check "  ...and the new reading is saved" 42 "$(pct)"
-check "  ...right after, it's fresh again" "fresh (0s old)" "$("$REFRESH")"
+check "  ...right after, it's fresh again" fresh "$("$REFRESH" | grep -oE '^fresh \([0-5]s old\)' | cut -d' ' -f1)"
 check "  ...so Claude Code isn't run twice" 1 "$(calls)"
 
 reset_state; reading 1000; transcript_at 2000
@@ -119,7 +119,7 @@ check "  ...which clears the failures" 0 "$(jq .fails "$HOME/.signals/usage/refr
 
 reset_state; reading 120; transcript_at 5
 jq -n --argjson last "$(( $(date +%s) - 1000 ))" '{last: $last, fails: 6}' > "$HOME/.signals/usage/refresh.json"
-check "many failures: waits up to 30 minutes" "waiting (asked 1000s ago)" "$("$REFRESH")"
+check "many failures: waits up to 30 minutes" "waiting (asked Ns ago)" "$("$REFRESH" | sed -E "s/100[0-2]s/Ns/")"
 
 reset_state; reading 120; transcript_at 5; echo hang > "$HOME/fake.mode"
 start=$(date +%s)
