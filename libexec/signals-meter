@@ -92,12 +92,14 @@ key_get() { # account
 
 # ── Plan: the usage Claude Code has already saved on this Mac ────────────────
 # Claude Code keeps its latest plan usage in ~/.claude.json, and hands exact
-# figures to its terminal status line (signals-statusline saves those). Signals
-# only reads these local files: it never uses your Claude login or calls
-# Anthropic. Whichever reading is newer wins.
+# figures to its terminal status line (signals-statusline saves those).
+# signals-refresh keeps the first fresh by asking Claude Code for it, the same
+# as /usage (about once a minute while you work). Signals never uses your Claude
+# login itself. Whichever reading is newer wins.
 account='null'
 rm -f "$TB/usage.json"   # left by older versions
 if [ "$mode" = plan ]; then
+  [ -z "${SIGNALS_USAGE_FIXTURE:-}" ] && "$LIBEXEC/signals-refresh" >/dev/null 2>&1
   raw='' as_of=0
   if [ -n "${SIGNALS_USAGE_FIXTURE:-}" ]; then
     raw=$(cat "$SIGNALS_USAGE_FIXTURE"); as_of=$now

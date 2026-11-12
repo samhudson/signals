@@ -4,7 +4,7 @@
 #   ./test/run.sh
 cd "$(dirname "$0")"
 failed=0
-for suite in sessions usage signals ledger; do
+for suite in sessions usage signals ledger refresh; do
   echo "━━ $suite"
   ./$suite.sh || failed=1
   echo

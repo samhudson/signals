@@ -8,6 +8,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLI="$ROOT/bin/signals"
 HOOK="$ROOT/libexec/signals-hook"
 export HOME="$(mktemp -d)"
+export SIGNALS_NO_REFRESH=1   # signals-refresh has its own suite (refresh.sh)
 export SIGNALS_NO_APP=1 SIGNALS_NO_NOTIFY=1 SIGNALS_TEST_KEYS="$HOME/keys" SIGNALS_SKIP_VERIFY=1 SIGNALS_NO_PROMPT=1
 export SIGNALS_NO_LEDGER=1   # the ledger has its own suite (ledger.sh)
 trap 'rm -rf "$HOME"' EXIT

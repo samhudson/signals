@@ -1,0 +1,97 @@
+#!/bin/bash
+# signals-refresh: keeps the plan reading fresh by asking Claude Code for it,
+# the same as typing /usage. Claude Code runs headless: no window, no model
+# call, no tokens, no session saved, no hooks, no MCP servers. It fetches the
+# figures from Anthropic itself and saves them to ~/.claude.json, where
+# signals-meter reads them. Signals never sees your Claude login.
+#
+# Claude Code saves a new reading at most once a minute, so this asks when
+#   - a Claude Code transcript changed since the reading (you're working),
+#   - a 5-hour or weekly window has reset since the reading,
+#   - the reading is over 15 minutes old (use on other devices counts too), or
+#   - SIGNALS_FRESH=1 (the usage menu was opened),
+# and the reading is at least a minute old. After a failure it waits longer
+# each time (up to 30 minutes). SIGNALS_NO_REFRESH=1 turns it off.
+#
+# Exit status: 0 always. Prints what it did (for `signals usage refresh`).
+set -u
+export PATH="/opt/""homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+TB="${SIGNALS_HOME:-$HOME/.signals}/usage"
+[ -n "${SIGNALS_NO_REFRESH:-}" ] && { echo "off"; exit 0; }
+CJ="$HOME/.claude.json"
+STATUS="$TB/refresh.json"
+mkdir -p "$TB"
+
+claude="${SIGNALS_CLAUDE:-}"
+if [ -z "$claude" ]; then
+  for c in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" "/opt/""homebrew/bin/claude" /usr/local/bin/claude; do
+    [ -x "$c" ] && { claude="$c"; break; }
+  done
+  [ -z "$claude" ] && claude=$(command -v claude 2>/dev/null)
+fi
+[ -n "$claude" ] && [ -x "$claude" ] || { echo "no Claude Code"; exit 0; }
+
+now=$(date +%s)
+read -r fetched r5 r7 < <(jq -r '
+  def iso: if . == null then 0 else sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601 end;
+  .cachedUsageUtilization // {} | [((.fetchedAtMs // 0) / 1000 | floor),
+    (.utilization.five_hour.resets_at | iso), (.utilization.seven_day.resets_at | iso)] | @tsv' "$CJ" 2>/dev/null)
+fetched=${fetched:-0} r5=${r5:-0} r7=${r7:-0}
+age=$((now - fetched))
+read -r last fails < <(jq -r '[.last // 0, .fails // 0] | @tsv' "$STATUS" 2>/dev/null)
+last=${last:-0} fails=${fails:-0}
+
+# Too soon: Claude Code would not save a new reading yet, or we're backing off.
+[ "$age" -lt 60 ] && { echo "fresh (${age}s old)"; exit 0; }
+wait_s=60
+[ "$fails" -gt 0 ] && { wait_s=$((60 << (fails > 5 ? 5 : fails))); [ "$wait_s" -gt 1800 ] && wait_s=1800; }
+[ $((now - last)) -lt "$wait_s" ] && { echo "waiting (asked $((now - last))s ago)"; exit 0; }
+
+why=''
+if [ -n "${SIGNALS_FRESH:-}" ]; then why=menu
+elif [ "$fetched" -eq 0 ] || [ "$age" -gt 900 ]; then why=old
+elif { [ "$r5" -gt 0 ] && [ "$r5" -le "$now" ]; } || { [ "$r7" -gt 0 ] && [ "$r7" -le "$now" ]; }; then why=reset
+else
+  # Working: any transcript written since the reading. (The stamp file carries
+  # the reading's time, so find can compare against it.)
+  stamp="$TB/refresh.stamp"
+  touch -t "$(date -r "$fetched" +%Y%m%d%H%M.%S)" "$stamp" 2>/dev/null
+  projects="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+  [ -n "$(find "$projects" -name '*.jsonl' -newer "$stamp" 2>/dev/null | head -1)" ] && why=working
+fi
+[ -z "$why" ] && { echo "idle (reading ${age}s old)"; exit 0; }
+
+# One at a time (the app, the menu and the command line can all call this).
+lock="$TB/refresh.lock"
+if ! mkdir "$lock" 2>/dev/null; then
+  [ $((now - $(stat -f %m "$lock" 2>/dev/null || echo "$now"))) -gt 60 ] || { echo "busy"; exit 0; }
+  rmdir "$lock" 2>/dev/null; mkdir "$lock" 2>/dev/null || { echo "busy"; exit 0; }
+fi
+trap 'rmdir "$lock" 2>/dev/null' EXIT
+
+# A clean environment: nothing from a Claude Code session this may run inside.
+out="$TB/refresh.out"
+(cd "$TB" && exec env -i HOME="$HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-${USER:-}}" PATH="$PATH" \
+   TMPDIR="${TMPDIR:-/tmp}" LANG="${LANG:-en_US.UTF-8}" ${CLAUDE_CONFIG_DIR:+CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR"} \
+   "$claude" -p /usage --no-session-persistence --strict-mcp-config \
+   --settings '{"disableAllHooks":true}' --output-format json) >"$out" 2>/dev/null </dev/null &
+pid=$!
+# Give up after 20 seconds (it normally takes under two).
+for ((i = 0; i < ${SIGNALS_REFRESH_TIMEOUT:-20} * 10; i++)); do
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 0.1
+done
+kill "$pid" 2>/dev/null
+{ wait "$pid"; } 2>/dev/null; rc=$?
+
+after=$(jq -r '((.cachedUsageUtilization.fetchedAtMs // 0) / 1000 | floor)' "$CJ" 2>/dev/null)
+if [ "$rc" -eq 0 ] && [ "$(jq -r '.is_error' "$out" 2>/dev/null)" = false ]; then
+  fails=0; result="refreshed ($why)"
+  [ "${after:-0}" -le "$fetched" ] && result="asked, no new reading ($why)"
+else
+  fails=$((fails + 1)); result="failed ($why, exit $rc)"
+fi
+rm -f "$out"
+jq -nc --argjson last "$now" --argjson fails "$fails" --arg result "$result" --arg why "$why" \
+  '{last: $last, fails: $fails, result: $result, why: $why}' > "$STATUS.tmp.$$" && mv "$STATUS.tmp.$$" "$STATUS"
+echo "$result"

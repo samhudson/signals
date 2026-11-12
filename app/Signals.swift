@@ -481,7 +481,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         appearance = sessionsItem.button?.observe(\.effectiveAppearance) { [weak self] _, _ in Task { @MainActor in self?.redraw() } }
         watch()
         timers = [Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshSessions() } },
-                  Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshUsage() } }]
+                  Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshUsage() } }]
         refreshSessions()
         refreshUsage()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -517,10 +517,14 @@ final class MenuBar: NSObject, NSMenuDelegate {
         }
     }
 
-    func refreshUsage() {
+    /// fresh: the usage menu was opened, so ask Claude Code for a new plan
+    /// reading even if you haven't been working (signals-refresh decides).
+    func refreshUsage(fresh: Bool = false) {
         lastUsage = Date()
         Task {
-            let (status, out, _) = await Engine.run(Engine.meter, env: ["SIGNALS_APP": "1"])
+            var env = ["SIGNALS_APP": "1"]
+            if fresh { env["SIGNALS_FRESH"] = "1" }
+            let (status, out, _) = await Engine.run(Engine.meter, env: env)
             guard status == 0, let data = out.data(using: .utf8), let u = try? JSONDecoder().decode(Usage.self, from: data) else { return }
             usage = u
             redraw()
@@ -591,7 +595,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === usageMenu {
-            if Date().timeIntervalSince(lastUsage) > 20 { refreshUsage() }
+            if Date().timeIntervalSince(lastUsage) > 20 { refreshUsage(fresh: true) }
             buildUsage()
         } else {
             buildSessions()
@@ -1157,7 +1161,7 @@ struct ConfigurePage: View {
                     }
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Where your usage comes from")
-                        Text("Signals reads the usage Claude Code already saves on this Mac, and the exact figures it gives its terminal status line. It never uses your Claude login and sends nothing anywhere.")
+                        Text("Signals asks Claude Code for your usage, the same as /usage, about once a minute while you work. Claude Code fetches it and saves it on this Mac, where Signals reads it. Signals never uses your Claude login and sends nothing anywhere.")
                             .font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         Text("For exact figures as you work in the terminal, run: signals install --statusline")
                             .font(.system(size: 11.5)).foregroundStyle(.secondary).textSelection(.enabled)

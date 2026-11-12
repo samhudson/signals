@@ -9,6 +9,7 @@ METER="$ROOT/libexec/signals-meter"
 GATE="$ROOT/libexec/signals-gate"
 PLUGIN="$ROOT/libexec/signals-usage-menu"
 export HOME="$(mktemp -d)"
+export SIGNALS_NO_REFRESH=1   # signals-refresh has its own suite (refresh.sh)
 export SIGNALS_NO_APP=1
 export SIGNALS_NO_LEDGER=1   # the ledger has its own suite (ledger.sh)
 export SIGNALS_NO_NOTIFY=1

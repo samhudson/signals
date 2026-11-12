@@ -10,6 +10,7 @@ CLI="$ROOT/bin/signals"
 METER="$ROOT/libexec/signals-meter"
 command -v go >/dev/null || { echo "  (skipped: needs Go to build the engine)"; exit 0; }
 export HOME="$(mktemp -d)"
+export SIGNALS_NO_REFRESH=1   # signals-refresh has its own suite (refresh.sh)
 export SIGNALS_NO_APP=1 SIGNALS_NO_NOTIFY=1
 unset SIGNALS_NO_LEDGER CLAUDE_CONFIG_DIR CODEX_HOME
 trap 'rm -rf "$HOME"' EXIT

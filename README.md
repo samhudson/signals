@@ -93,7 +93,7 @@ Usage is off until you turn it on, in the setup window or with `signals usage`. 
 
 If you use Codex on a ChatGPT plan, its limits appear next to Claude's automatically.
 
-On a plan, the figure in the menu bar is your 5-hour window, or your week once that's 80% used. Plan readings are only as fresh as the last time Claude Code saved them; run `/usage` in Claude Code to refresh, or add the terminal status line (`signals install --statusline`) for exact figures as you work.
+On a plan, the figure in the menu bar is your 5-hour window, or your week once that's 80% used. Signals keeps the reading fresh by asking Claude Code for it, the same as `/usage`, about once a minute while you work (and every 15 minutes otherwise), so you never need to run `/usage` yourself. Claude Code runs in the background with no window, no tokens and no session; Signals never uses your Claude login.
 
 ## Privacy
 
@@ -113,7 +113,7 @@ shows, for every session, why its light is the colour it is: the last event from
 
 - **No lights at all?** `signals status` shows which agents are wired up. Sessions started before installing need a restart.
 - **Pressed Esc?** Claude Code doesn't announce an interrupt, so Signals reads it from the session's transcript; the light turns green within a few seconds.
-- **Usage looks old?** The menu shows how old each reading is. Run `/usage` in Claude Code.
+- **Usage looks old?** The menu shows how old each reading is. Signals refreshes it through Claude Code, so check Claude Code is signed in (run `claude`, then `/login`).
 
 ## Commands
 
