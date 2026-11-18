@@ -87,6 +87,28 @@ rm -rf "$HOME/.signals/usage/cache"
 check "concurrent meters don't clash" 0 "$(cat "$HOME"/m?.err | wc -l | tr -d ' ')"
 check "  ...and agree on the total" 44.65 "$(state .total)"
 
+# Transcripts are read incrementally: only what was added since the last read.
+P4="$P/session4.jsonl"
+msg k1 claude-haiku-4-5 '{"input_tokens":1000000,"output_tokens":0}' > "$P4"
+for i in $(seq 1 12); do printf '{"type":"user","message":{"content":"%s"}}\n' "$(head -c 100000 /dev/zero | tr '\0' x)"; done >> "$P4"
+"$METER" >/dev/null;                               check "incremental: a new transcript is counted" 45.65 "$(state .total)"
+msg k2 claude-haiku-4-5 '{"input_tokens":1000000,"output_tokens":0}' >> "$P4"
+"$METER" >/dev/null;                               check "  ...a message over 1 MB back is kept when only new lines are read" 46.65 "$(state .total)"
+check "  ...the cache records how far it read" "$(stat -f %z "$P4")" \
+  "$(jq -r .size "$HOME/.signals/usage/cache/claude-$(printf '%s' "$P4" | shasum | cut -c1-16).json")"
+msg k2 claude-haiku-4-5 '{"input_tokens":1000000,"output_tokens":0}' >> "$P4"
+"$METER" >/dev/null;                               check "  ...the same message again isn't counted twice" 46.65 "$(state .total)"
+printf '{"type":"assistant","timestamp":"%s","message":{"id":"msg_k3' "$TODAY" >> "$P4"
+"$METER" >/dev/null;                               check "  ...a half-written line isn't counted yet" 46.65 "$(state .total)"
+printf '","model":"claude-haiku-4-5","usage":{"input_tokens":1000000,"output_tokens":0}},"requestId":"req_k3","cwd":"/code/acme/api"}\n' >> "$P4"
+"$METER" >/dev/null;                               check "  ...and is counted once it's complete" 47.65 "$(state .total)"
+msg k1 claude-haiku-4-5 '{"input_tokens":1000000,"output_tokens":0}' > "$P4"
+"$METER" >/dev/null;                               check "  ...a rewritten transcript is read again from the start" 45.65 "$(state .total)"
+{ msg k5 claude-haiku-4-5 '{"input_tokens":1000000,"output_tokens":0}'
+  for i in $(seq 1 3); do printf '{"type":"user","message":{"content":"%s"}}\n' "$(head -c 100000 /dev/zero | tr '\0' x)"; done; } > "$P4"
+"$METER" >/dev/null;                               check "  ...and one rewritten longer isn't mistaken for added lines" 45.65 "$(state .total)"
+rm -f "$P4" "$HOME/.signals/usage/cache/claude-$(printf '%s' "$P4" | shasum | cut -c1-16).json"; "$METER" >/dev/null
+
 echo "budget and gate"
 gate() { echo '{"prompt":"hi"}' | "$GATE" 2>"$HOME/gate.err"; echo $?; }
 "$CLI" budget 100 >/dev/null;                      check "budget 100 → ok" ok "$(state .status)"

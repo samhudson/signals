@@ -171,6 +171,10 @@ func TestClaudeTitlesReadIncrementally(t *testing.T) {
 	if got := claudeTitle("c1"); got != "Something new" {
 		t.Errorf("a rewritten transcript is read again from the start: %q", got)
 	}
+	os.WriteFile(tr, []byte(`{"type":"user"}`+"\n"+filler), 0o644)
+	if got := claudeTitle("c1"); got != "" {
+		t.Errorf("a transcript rewritten longer (no title now) is read again, not added to: %q", got)
+	}
 }
 
 func TestInterruptsAndNaming(t *testing.T) {

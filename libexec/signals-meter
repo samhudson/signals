@@ -41,13 +41,33 @@ fi
 # ── Parse Claude Code transcripts touched in the last 40 days (cached per file) ─
 # Per transcript: priced replies, the session title, and "hit your limit" events.
 live_caches=()   # the cache files of transcripts that exist now
+mark() { # file bytes: a fingerprint of the 4 KB before that point
+  local s=$(( $2 > 4096 ? $2 - 4096 : 0 ))
+  tail -c +$((s + 1)) "$1" 2>/dev/null | head -c $(( $2 - s )) | shasum | cut -c1-16
+}
 while IFS= read -r f; do
   key=$(printf '%s' "$f" | shasum | cut -c1-16)
   live_caches+=("$CACHE/claude-$key.json")
-  sig="$(stat -f '%z-%m' "$f")-$phash"
+  read -r size mtime < <(stat -f '%z %m' "$f")
+  sig="$size-$mtime-$phash"
   out="$CACHE/claude-$key.json"
-  [ -f "$out" ] && [ "$(jq -r '.sig' "$out" 2>/dev/null)" = "$sig" ] && continue
-  jq -ncR --slurpfile p "$PRICING" --arg sig "$sig" --arg fsid "$(basename "$f" .jsonl)" '
+  # A session's transcript only grows (to tens of megabytes), so read just
+  # what was added since the last read, plus 1 MB so a line half-written then
+  # is read whole (entries are deduplicated). A rewritten file, or new prices,
+  # means reading it all again.
+  oldf=/dev/null from=1
+  if [ -f "$out" ]; then
+    read -r osig osize omark < <(jq -r '"\(.sig) \(.size // 0) \(.mark // "-")"' "$out" 2>/dev/null)
+    [ "$osig" = "$sig" ] && continue
+    # Grown, and the part read last time is unchanged (its last 4 KB match).
+    if [ "${osig##*-}" = "$phash" ] && [ "${osize:-0}" -gt 0 ] && [ "$size" -gt "${osize:-0}" ] \
+       && [ "$(mark "$f" "$osize")" = "$omark" ]; then
+      oldf="$out" from=$(( osize > 1048576 ? osize - 1048576 + 1 : 1 ))
+    fi
+  fi
+  tail -c +"$from" "$f" | jq -ncR --slurpfile p "$PRICING" --slurpfile o "$oldf" --arg sig "$sig" --argjson size "$size" \
+    --arg mark "$(mark "$f" "$size")" \
+    --arg fsid "$(basename "$f" .jsonl)" '
     def rate($m):
       $p[0].models[$m]
       // ($p[0].models | to_entries | map(select(.key as $k | $m | startswith($k)))
@@ -64,10 +84,12 @@ while IFS= read -r f; do
           .e += [{k: "\($x.message.id):\($x.requestId // "")", ts: $x.timestamp, m: $x.message.model,
                   p: ($x.cwd // ""), u: $x.message.usage}]
         else . end)
-    | (.sid // $fsid) as $sid
-    | { sig: $sig, sid: $sid, title: (.ctitle // .title),
-        hits: [ .hits[] | epoch ],
-        entries: (.e | map({key: .k, value: .}) | from_entries | [ .[] ]          # dedupe, last wins
+    | ($o[0] // {}) as $old
+    | ($old.sid // .sid // $fsid) as $sid
+    | (.ctitle // $old.ctitle) as $ct | (.title // $old.atitle) as $at
+    | { sig: $sig, size: $size, mark: $mark, sid: $sid, ctitle: $ct, atitle: $at, title: ($ct // $at),
+        hits: (($old.hits // []) + [ .hits[] | epoch ] | unique),
+        entries: (($old.entries // []) + (.e | map({key: .k, value: .}) | from_entries | [ .[] ]          # dedupe, last wins
           | map(. as $x | rate($x.m) as $r | ($x.ts | epoch) as $t
               | ($x.u.cache_creation.ephemeral_1h_input_tokens // 0) as $w1h
               | ($x.u.cache_creation.ephemeral_5m_input_tokens
@@ -81,7 +103,8 @@ while IFS= read -r f; do
                         + $w1h * $r.input * 2
                         + ($x.u.cache_read_input_tokens // 0) * $r.cache_read
                         ) / 1000000 * (if $x.u.speed == "fast" then 2 else 1 end)
-                      end) })) }' "$f" > "$out.tmp.$$" 2>/dev/null && mv "$out.tmp.$$" "$out" || rm -f "$out.tmp.$$"
+                      end) }))
+          | map({key: .k, value: .}) | from_entries | [ .[] ]) }' > "$out.tmp.$$" 2>/dev/null && mv "$out.tmp.$$" "$out" || rm -f "$out.tmp.$$"
 done < <(find "$HOME/.claude/projects" -name '*.jsonl' -mtime -40 2>/dev/null)
 find "$CACHE" -name 'claude-*.json' -mtime +40 -delete 2>/dev/null
 
@@ -336,7 +359,9 @@ warn_at=$(jq -r '(.warn // 0.8) * 100' "$CONFIG" 2>/dev/null || echo 80)
 if [ -d "$CX" ]; then
   line=''
   while IFS= read -r f; do
-    line=$(grep '"rate_limits"' "$f" 2>/dev/null | tail -1)
+    # The newest limits are near the end: look there first.
+    line=$(tail -c 1048576 "$f" 2>/dev/null | grep '"rate_limits"' | tail -1)
+    [ -z "$line" ] && line=$(grep '"rate_limits"' "$f" 2>/dev/null | tail -1)
     [ -n "$line" ] && break
   done < <(find "$CX" -name 'rollout-*.jsonl' -mtime -8 -exec stat -f '%m %N' {} + 2>/dev/null | sort -rn | cut -d' ' -f2-)
   if [ -n "$line" ]; then

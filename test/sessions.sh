@@ -186,6 +186,8 @@ echo 'le":"Billing v3"}' >> "$T3"
 check "  ...a line half-written at the last read is read whole later" 1 "$("$PLUGIN" | grep -c 'Billing v3 · Claude Code')"
 echo '{"type":"ai-title","aiTitle":"Something new"}' > "$T3"
 check "  ...a rewritten transcript is read again from the start" 1 "$("$PLUGIN" | grep -c 'Something new · Claude Code')"
+{ echo '{"type":"user"}'; printf '{"type":"assistant","message":{"content":"%s"}}\n' "$(head -c 100000 /dev/zero | tr '\0' x)"; } > "$T3"
+check "  ...and one rewritten longer isn't mistaken for added lines" 0 "$("$PLUGIN" | grep -c 'Something new')"
 rm -f "$HOME"/.signals/sessions/* "$HOME"/.claude/sessions/*
 
 echo "installer"

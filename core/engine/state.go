@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sort"
@@ -258,8 +259,9 @@ func claudeTitle(sid string) string {
 	e := titles.m[t]
 	mtime := info.ModTime().UnixNano()
 	if info.Size() != e.size || mtime != e.mtime {
-		if info.Size() <= e.size {
-			e = titleEntry{} // replaced or rewritten: read it all
+		// Grown, with the part read last time unchanged: read on. Else read it all.
+		if info.Size() <= e.size || markOf(t, e.size) != e.mark {
+			e = titleEntry{}
 		}
 		from := e.size - titleOverlap
 		if from < 0 {
@@ -284,7 +286,7 @@ func claudeTitle(sid string) string {
 						}
 					}
 				}
-				e.size, e.mtime = info.Size(), mtime
+				e.size, e.mtime, e.mark = info.Size(), mtime, markOf(t, info.Size())
 			}
 			f.Close()
 		}
@@ -299,7 +301,29 @@ const titleOverlap = 64 * 1024
 
 type titleEntry struct {
 	size, mtime int64
+	mark        uint64
 	custom, ai  string
+}
+
+// markOf fingerprints the 4 KB of a file before offset n, to tell a file that
+// grew from one that was rewritten.
+func markOf(path string, n int64) uint64 {
+	from := n - 4096
+	if from < 0 {
+		from = 0
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	buf := make([]byte, n-from)
+	if _, err := f.ReadAt(buf, from); err != nil {
+		return 0
+	}
+	h := fnv.New64a()
+	h.Write(buf)
+	return h.Sum64()
 }
 
 var titles = struct {

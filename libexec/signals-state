@@ -41,20 +41,26 @@ states=$(cat "$STATE_DIR"/*.json 2>/dev/null | jq -s '.' 2>/dev/null)
 TCACHE="${SIGNALS_HOME:-$HOME/.signals}/cache/titles"
 mkdir -p "$TCACHE" 2>/dev/null
 find "$TCACHE" -name '*.json' -mtime +30 -delete 2>/dev/null
+mark() { # file bytes: a fingerprint of the 4 KB before that point
+  local s=$(( $2 > 4096 ? $2 - 4096 : 0 ))
+  tail -c +$((s + 1)) "$1" 2>/dev/null | head -c $(( $2 - s )) | shasum | cut -c1-16
+}
 title_of() { # session-id transcript
-  local c="$TCACHE/$1.json" size mtime old csize cmtime from
+  local c="$TCACHE/$1.json" size mtime old csize cmtime cmark from
   read -r size mtime < <(stat -f '%z %m' "$2" 2>/dev/null) || return
   old=$(cat "$c" 2>/dev/null); [ -n "$old" ] || old='{}'
-  read -r csize cmtime < <(jq -r '"\(.size // 0) \(.mtime // 0)"' <<<"$old" 2>/dev/null)
+  read -r csize cmtime cmark < <(jq -r '"\(.size // 0) \(.mtime // 0) \(.mark // "-")"' <<<"$old" 2>/dev/null)
   csize=${csize:-0} cmtime=${cmtime:-0}
   if [ "$size" != "$csize" ] || [ "$mtime" != "$cmtime" ]; then
-    if [ "$size" -le "$csize" ]; then from=0; old='{}'    # replaced or rewritten: read it all
-    else from=$(( csize > 65536 ? csize - 65536 : 0 )); fi
+    # Grown, with the part read last time unchanged: read on. Else read it all.
+    if [ "$size" -gt "$csize" ] && [ "$(mark "$2" "$csize")" = "$cmark" ]; then
+      from=$(( csize > 65536 ? csize - 65536 : 0 ))
+    else from=0; old='{}'; fi
     old=$(tail -c +$((from + 1)) "$2" | grep -E '"type":"(custom|ai)-title"' \
       | jq -c 'select(.type == "custom-title" or .type == "ai-title")
                | {type, v: (if .type == "custom-title" then (.customTitle // .title // "") else (.aiTitle // "") end)}' 2>/dev/null \
-      | jq -sc --argjson o "$old" --argjson size "$size" --argjson mtime "$mtime" '
-          {size: $size, mtime: $mtime,
+      | jq -sc --argjson o "$old" --argjson size "$size" --argjson mtime "$mtime" --arg mark "$(mark "$2" "$size")" '
+          {size: $size, mtime: $mtime, mark: $mark,
            custom: (map(select(.type == "custom-title")) | if length > 0 then last.v else ($o.custom // "") end),
            ai: (map(select(.type == "ai-title")) | if length > 0 then last.v else ($o.ai // "") end)}' 2>/dev/null)
     [ -n "$old" ] && printf '%s\n' "$old" > "$c.tmp.$$" && mv "$c.tmp.$$" "$c"
