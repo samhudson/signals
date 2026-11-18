@@ -2,6 +2,12 @@
 
 All notable changes, newest first. Versions follow [Semantic Versioning](https://semver.org).
 
+## [1.3.1] - 2026-11-18
+
+### Fixes
+
+- read only what's new in growing transcripts
+
 ## [1.3.0] - 2026-11-18
 
 ### Features
