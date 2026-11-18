@@ -2,6 +2,16 @@
 
 All notable changes, newest first. Versions follow [Semantic Versioning](https://semver.org).
 
+## [1.4.0] - 2026-11-18
+
+### Features
+
+- keep Codex plan limits fresh by asking Codex for them
+
+### Fixes
+
+- say Signals is waiting for Claude Code instead of asking you to run /usage
+
 ## [1.3.1] - 2026-11-18
 
 ### Fixes
