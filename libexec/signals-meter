@@ -185,8 +185,9 @@ if [ "$mode" = plan ] && [ -f "$TB/limits.json" ]; then
   fi
 fi
 # ── Between readings: estimate from Claude Code's activity on this Mac ──────
-# Claude Code only saves new plan usage when you run /usage (or its terminal
-# status line runs). In between, Signals prices what Claude Code has done since
+# Claude Code saves new plan usage when signals-refresh asks (about once a
+# minute while you work), when you run /usage, or when its terminal status line
+# runs. In between, Signals prices what Claude Code has done since
 # (from its logs here, at API rates) and turns that into a percentage of each
 # limit. 5-hour windows start with the first message after a reset; the week
 # resets on a fixed day. So no reading is needed after the first one.

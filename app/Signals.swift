@@ -362,7 +362,7 @@ struct Dashboard: View {
             if let s = session, s.active == true, let p = s.pct {
                 MeterRow(label: "5-hour", pct: p, value: pctText(p), note: s.resets_at.map(clock) ?? "")
             } else if outdated {
-                Text("Your limits have reset since this reading. Run /usage in Claude Code to update it.")
+                Text("Your limits have reset since this reading. A new one is on the way.")
                     .font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 MeterRow(label: "5-hour", pct: 0, value: "0%", note: "not started")
@@ -385,7 +385,7 @@ struct Dashboard: View {
                     Text("At this pace you hit the limit around \(clock(eta))").font(.system(size: 11.5)).foregroundStyle(amber)
                 }
             } else {
-                Text("No reading yet. Run /usage in Claude Code.").font(.system(size: 11.5)).foregroundStyle(.secondary)
+                Text("No reading yet. Waiting for Claude Code (signed in? Run claude, then /login).").font(.system(size: 11.5)).foregroundStyle(.secondary)
             }
         }
     }

@@ -162,7 +162,7 @@ SIGNALS_DETECTED_PLAN= "$METER" >/dev/null;        check "  ...signed out keeps 
 "$CLI" usage plan >/dev/null
 check "plan detected from the Claude login" "Claude Pro" "$(state .plan.label)"
 out=$("$PLUGIN")
-check "no reading yet → points to /usage" 1 "$(grep -c 'Run /usage' <<<"$out")"
+check "no reading yet → waiting for Claude Code, check it's signed in" 1 "$(grep -c 'Waiting for Claude Code · signed in' <<<"$out")"
 check "plan view never shows money" 0 "$(grep -c '\$' <<<"$out")"
 
 # Account usage fixtures, shaped like the usage endpoint.

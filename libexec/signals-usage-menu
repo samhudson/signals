@@ -49,7 +49,7 @@ jq -r --arg cli "$CLI" '
         "🚧", "---",
         "\(.plan.label // "Claude plan") | size=12 color=gray",
         "No usage reading yet | color=gray",
-        "Run /usage in Claude Code and it appears here | size=11 color=gray",
+        "Waiting for Claude Code · signed in? Run claude, then /login | size=11 color=gray",
         footer
       else
         ($a.session.active and $a.session.pct > 0) as $in_session
@@ -68,7 +68,7 @@ jq -r --arg cli "$CLI" '
            "5-hour limit reached · back at \($a.session.resets_at | at)"
          elif $a.session.active then
            "5-hour \($a.session.pct | bar) \($a.session.pct | pct)" + (if $a.session.resets_at then " · resets \($a.session.resets_at | at)" else "" end) + " | font=Menlo size=12"
-         elif $a.outdated then "Limits reset since the last reading · run /usage in Claude Code | size=12"
+         elif $a.outdated then "Limits reset since the last reading · a new one is on the way | size=12"
          else "5-hour window not started | size=12" end),
         (if $a.eta and .status == "warn" then "At this pace you hit it around \($a.eta | at) | size=12" else empty end),
         # Weekly line
