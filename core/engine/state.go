@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -239,37 +240,72 @@ func transcript(sid, known string) string {
 }
 
 // claudeTitle is Claude Code's own title (the one in the editor tab and
-// /resume): a renamed title wins over the AI-generated one.
+// /resume): a renamed title wins over the AI-generated one. Transcripts grow
+// to tens of megabytes and the tray asks often, so each transcript's titles
+// are remembered with how far it was read; later calls read only what was
+// added (plus 64 KB, so a line half-written last time is read whole).
 func claudeTitle(sid string) string {
 	t := transcript(sid, "")
 	if t == "" {
 		return ""
 	}
-	f, err := os.Open(t)
+	info, err := os.Stat(t)
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
-	var custom, ai string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		switch {
-		case bytes.Contains(line, []byte(`"type":"custom-title"`)):
-			var e struct{ CustomTitle, Title string }
-			if json.Unmarshal(line, &e) == nil {
-				custom = firstNonEmpty(e.CustomTitle, e.Title)
-			}
-		case bytes.Contains(line, []byte(`"type":"ai-title"`)):
-			var e struct{ AiTitle string }
-			if json.Unmarshal(line, &e) == nil {
-				ai = e.AiTitle
-			}
+	titles.Lock()
+	defer titles.Unlock()
+	e := titles.m[t]
+	mtime := info.ModTime().UnixNano()
+	if info.Size() != e.size || mtime != e.mtime {
+		if info.Size() <= e.size {
+			e = titleEntry{} // replaced or rewritten: read it all
 		}
+		from := e.size - titleOverlap
+		if from < 0 {
+			from = 0
+		}
+		if f, err := os.Open(t); err == nil {
+			if _, err := f.Seek(from, 0); err == nil {
+				sc := bufio.NewScanner(f)
+				sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+				for sc.Scan() {
+					line := sc.Bytes()
+					switch {
+					case bytes.Contains(line, []byte(`"type":"custom-title"`)):
+						var v struct{ Type, CustomTitle, Title string }
+						if json.Unmarshal(line, &v) == nil && v.Type == "custom-title" {
+							e.custom = firstNonEmpty(v.CustomTitle, v.Title)
+						}
+					case bytes.Contains(line, []byte(`"type":"ai-title"`)):
+						var v struct{ Type, AiTitle string }
+						if json.Unmarshal(line, &v) == nil && v.Type == "ai-title" {
+							e.ai = v.AiTitle
+						}
+					}
+				}
+				e.size, e.mtime = info.Size(), mtime
+			}
+			f.Close()
+		}
+		titles.m[t] = e
 	}
-	return firstNonEmpty(custom, ai)
+	return firstNonEmpty(e.custom, e.ai)
 }
+
+// titleOverlap is how much of a transcript is read again each time, so a
+// title line that was half-written at the last read is read whole.
+const titleOverlap = 64 * 1024
+
+type titleEntry struct {
+	size, mtime int64
+	custom, ai  string
+}
+
+var titles = struct {
+	sync.Mutex
+	m map[string]titleEntry
+}{m: map[string]titleEntry{}}
 
 // interruptedAt is when the user last pressed Esc in a Claude session: Esc
 // fires no hook, but Claude Code writes a "[Request interrupted by user" entry.

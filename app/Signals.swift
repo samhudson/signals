@@ -460,6 +460,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
     var timers: [Timer] = []
     var nextReading: Timer?
     var pending = false
+    var lastSessions = Date.distantPast
     var appearance: NSKeyValueObservation?
     let openSettings: (String?) -> Void
 
@@ -482,7 +483,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         appearance = sessionsItem.button?.observe(\.effectiveAppearance) { [weak self] _, _ in Task { @MainActor in self?.redraw() } }
         watch()
         timers = [Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshSessions() } },
-                  Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshUsage() } }]
+                  Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshUsage() } }]
         refreshSessions()
         refreshUsage()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -500,15 +501,19 @@ final class MenuBar: NSObject, NSMenuDelegate {
         watcher = src
     }
 
+    /// Hooks fire on every tool call, so refresh at most once a second however
+    /// many events arrive (each refresh runs signals-state).
     func refreshSoon() {
         guard !pending else { return }
         pending = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+        let wait = max(0.25, 1 - Date().timeIntervalSince(lastSessions))
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
             Task { @MainActor in self?.pending = false; self?.refreshSessions() }
         }
     }
 
     func refreshSessions() {
+        lastSessions = Date()
         Task {
             let (status, out, _) = await Engine.run(Engine.stateScript)
             guard status == 0, let data = out.data(using: .utf8),
@@ -536,7 +541,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     /// Claude Code saves a new plan reading at most once a minute, so check
     /// again the moment this one turns 61 seconds old instead of at the next
-    /// regular check (up to 30 s later). If you're idle then, signals-refresh
+    /// regular check (up to 60 s later). If you're idle then, signals-refresh
     /// skips it and the regular checks carry on.
     func scheduleNextReading(_ u: Usage) {
         nextReading?.invalidate(); nextReading = nil

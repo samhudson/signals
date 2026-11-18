@@ -175,6 +175,17 @@ check "prompt title shown for other agents" 1 "$(grep -c 'Fix the login redirect
 check "folder kept in tooltip" 1 "$(grep -c 'Fix the login redirect bug.*tooltip=/work/t1' <<<"$out")"
 echo '{"type":"custom-title","customTitle":"Billing v2"}' >> "$HOME/.claude/projects/-code-acme/t3.jsonl"
 check "renamed title wins" 1 "$("$PLUGIN" | grep -c 'Billing v2 · Claude Code')"
+# Titles are read incrementally (only what was added since the last read).
+T3="$HOME/.claude/projects/-code-acme/t3.jsonl"
+for i in 1 2 3; do printf '{"type":"assistant","message":{"content":"%s"}}\n' "$(head -c 100000 /dev/zero | tr '\0' x)" >> "$T3"; done
+check "  ...a title far behind new lines is remembered" 1 "$("$PLUGIN" | grep -c 'Billing v2 · Claude Code')"
+echo '{"type":"assistant","message":{"content":"the text \"type\":\"custom-title\" in a message"}}' >> "$T3"
+check "  ...quoting the title marker in a message changes nothing" 1 "$("$PLUGIN" | grep -c 'Billing v2 · Claude Code')"
+printf '%s' '{"type":"custom-title","customTit' >> "$T3"; "$PLUGIN" >/dev/null
+echo 'le":"Billing v3"}' >> "$T3"
+check "  ...a line half-written at the last read is read whole later" 1 "$("$PLUGIN" | grep -c 'Billing v3 · Claude Code')"
+echo '{"type":"ai-title","aiTitle":"Something new"}' > "$T3"
+check "  ...a rewritten transcript is read again from the start" 1 "$("$PLUGIN" | grep -c 'Something new · Claude Code')"
 rm -f "$HOME"/.signals/sessions/* "$HOME"/.claude/sessions/*
 
 echo "installer"

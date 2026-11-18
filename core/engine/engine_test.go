@@ -132,6 +132,47 @@ func TestTitles(t *testing.T) {
 	}
 }
 
+// Claude's own titles are read incrementally: only what was added since the
+// last read, plus an overlap for a line that was half-written.
+func TestClaudeTitlesReadIncrementally(t *testing.T) {
+	h := home(t)
+	proj := filepath.Join(h, ".claude", "projects", "-w")
+	os.MkdirAll(proj, 0o755)
+	tr := filepath.Join(proj, "c1.jsonl")
+	appendTo := func(s string) {
+		f, _ := os.OpenFile(tr, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		f.WriteString(s)
+		f.Close()
+	}
+	filler := strings.Repeat(`{"type":"assistant","message":{"content":"`+strings.Repeat("x", 500)+`"}}`+"\n", 400) // about 220 KB
+	appendTo(`{"type":"ai-title","aiTitle":"Fix the login bug"}` + "\n" + filler)
+	if got := claudeTitle("c1"); got != "Fix the login bug" {
+		t.Fatalf("first read: %q", got)
+	}
+	appendTo(filler)
+	if got := claudeTitle("c1"); got != "Fix the login bug" {
+		t.Errorf("a title far behind the new lines is remembered: %q", got)
+	}
+	appendTo(`{"type":"assistant","message":{"content":"the text \"type\":\"custom-title\" in a message"}}` + "\n")
+	if got := claudeTitle("c1"); got != "Fix the login bug" {
+		t.Errorf("quoting the title marker in a message changes nothing: %q", got)
+	}
+	appendTo(`{"type":"ai-title","aiTi`)
+	claudeTitle("c1")
+	appendTo(`tle":"Fix the login and logout bugs"}` + "\n")
+	if got := claudeTitle("c1"); got != "Fix the login and logout bugs" {
+		t.Errorf("a line half-written at the last read is read whole later: %q", got)
+	}
+	appendTo(`{"type":"custom-title","customTitle":"Auth fixes"}` + "\n")
+	if got := claudeTitle("c1"); got != "Auth fixes" {
+		t.Errorf("a rename wins: %q", got)
+	}
+	os.WriteFile(tr, []byte(`{"type":"ai-title","aiTitle":"Something new"}`+"\n"), 0o644)
+	if got := claudeTitle("c1"); got != "Something new" {
+		t.Errorf("a rewritten transcript is read again from the start: %q", got)
+	}
+}
+
 func TestInterruptsAndNaming(t *testing.T) {
 	h := home(t)
 	os.MkdirAll(SessionsDir(), 0o755)

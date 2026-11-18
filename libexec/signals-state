@@ -34,15 +34,40 @@ states=$(cat "$STATE_DIR"/*.json 2>/dev/null | jq -s '.' 2>/dev/null)
 [ -z "$states" ] && states='[]'
 
 # Claude Code's own session titles (the ones in the editor tab and /resume):
-# a renamed title wins over the AI-generated one.
+# a renamed title wins over the AI-generated one. Transcripts grow to tens of
+# megabytes and this runs after every tool call, so each session's titles are
+# remembered with how far the transcript was read; later runs read only what
+# was added (plus 64 KB, so a line half-written last time is read whole).
+TCACHE="${SIGNALS_HOME:-$HOME/.signals}/cache/titles"
+mkdir -p "$TCACHE" 2>/dev/null
+find "$TCACHE" -name '*.json' -mtime +30 -delete 2>/dev/null
+title_of() { # session-id transcript
+  local c="$TCACHE/$1.json" size mtime old csize cmtime from
+  read -r size mtime < <(stat -f '%z %m' "$2" 2>/dev/null) || return
+  old=$(cat "$c" 2>/dev/null); [ -n "$old" ] || old='{}'
+  read -r csize cmtime < <(jq -r '"\(.size // 0) \(.mtime // 0)"' <<<"$old" 2>/dev/null)
+  csize=${csize:-0} cmtime=${cmtime:-0}
+  if [ "$size" != "$csize" ] || [ "$mtime" != "$cmtime" ]; then
+    if [ "$size" -le "$csize" ]; then from=0; old='{}'    # replaced or rewritten: read it all
+    else from=$(( csize > 65536 ? csize - 65536 : 0 )); fi
+    old=$(tail -c +$((from + 1)) "$2" | grep -E '"type":"(custom|ai)-title"' \
+      | jq -c 'select(.type == "custom-title" or .type == "ai-title")
+               | {type, v: (if .type == "custom-title" then (.customTitle // .title // "") else (.aiTitle // "") end)}' 2>/dev/null \
+      | jq -sc --argjson o "$old" --argjson size "$size" --argjson mtime "$mtime" '
+          {size: $size, mtime: $mtime,
+           custom: (map(select(.type == "custom-title")) | if length > 0 then last.v else ($o.custom // "") end),
+           ai: (map(select(.type == "ai-title")) | if length > 0 then last.v else ($o.ai // "") end)}' 2>/dev/null)
+    [ -n "$old" ] && printf '%s\n' "$old" > "$c.tmp.$$" && mv "$c.tmp.$$" "$c"
+  fi
+  jq -r 'if (.custom // "") != "" then .custom else (.ai // "") end' <<<"$old" 2>/dev/null
+}
 titles=$(
   { jq -r '.[] | select(.agent == "claude") | .session_id' <<<"$states"; jq -r '.[].sessionId' <<<"$registry"; } \
   | sort -u | while read -r sid; do
       [ -z "$sid" ] && continue
       t=$(ls "$HOME"/.claude/projects/*/"$sid".jsonl 2>/dev/null | head -1)
       [ -n "$t" ] || continue
-      title=$(grep -h '"type":"custom-title"' "$t" | tail -1 | jq -r '.customTitle // .title // empty' 2>/dev/null)
-      [ -z "$title" ] && title=$(grep -h '"type":"ai-title"' "$t" | tail -1 | jq -r '.aiTitle // empty' 2>/dev/null)
+      title=$(title_of "$sid" "$t")
       [ -n "$title" ] && jq -nc --arg s "$sid" --arg t "$title" '{($s): $t}'
     done | jq -s 'add // {}' 2>/dev/null
 )
