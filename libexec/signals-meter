@@ -352,18 +352,23 @@ live=$(cat "${SIGNALS_HOME:-$HOME/.signals}"/sessions/claude-*.json "${SIGNALS_H
 # ── Codex: the plan limits Codex saves in its own session logs ────────────────
 # Each Codex turn logs a token_count event with your ChatGPT plan's limits (a
 # 5-hour and a weekly window). The newest log from the last week that has one
-# is read; nothing else from your Codex sessions is used.
+# is read; nothing else from your Codex sessions is used. signals-refresh-codex
+# asks Codex itself when that's old (Codex used elsewhere, or a reset), and
+# whichever reading is newer wins.
 codex='null'
 CX="${CODEX_HOME:-$HOME/.codex}/sessions"
 warn_at=$(jq -r '(.warn // 0.8) * 100' "$CONFIG" 2>/dev/null || echo 80)
-if [ -d "$CX" ]; then
+[ -z "${SIGNALS_USAGE_FIXTURE:-}" ] && "$LIBEXEC/signals-refresh-codex" >/dev/null 2>&1
+if [ -d "$CX" ] || [ -f "$TB/codex-limits.json" ]; then
   line=''
-  while IFS= read -r f; do
+  [ -d "$CX" ] && while IFS= read -r f; do
     # The newest limits are near the end: look there first.
     line=$(tail -c 1048576 "$f" 2>/dev/null | grep '"rate_limits"' | tail -1)
     [ -z "$line" ] && line=$(grep '"rate_limits"' "$f" 2>/dev/null | tail -1)
     [ -n "$line" ] && break
   done < <(find "$CX" -name 'rollout-*.jsonl' -mtime -8 -exec stat -f '%m %N' {} + 2>/dev/null | sort -rn | cut -d' ' -f2-)
+  line=$({ printf '%s\n' "$line"; cat "$TB/codex-limits.json" 2>/dev/null; } | jq -cs '
+    map(select(.payload.rate_limits)) | max_by((.timestamp // "") | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0) // empty' 2>/dev/null)
   if [ -n "$line" ]; then
     codex=$(jq -c --argjson now "$now" --argjson warn "$warn_at" '
       def title: (.[0:1] | ascii_upcase) + .[1:];

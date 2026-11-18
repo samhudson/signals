@@ -91,7 +91,7 @@ Usage is off until you turn it on, in the setup window or with `signals usage`. 
 - **Pay as you go** (an API key). What each Claude Code session on this Mac costs, this month's total, and the pace for the month. Set a monthly budget and the gate closes when it's spent: new Claude Code prompts wait until you take a one-hour pass (`signals pass 1h`) or raise the budget.
 - **Off.** Just the session lights.
 
-If you use Codex on a ChatGPT plan, its limits appear next to Claude's automatically.
+If you use Codex on a ChatGPT plan, its limits appear next to Claude's automatically. They come from Codex's own logs while you use it here, and Signals asks Codex itself every 15 minutes otherwise, so Codex used on the web or another computer shows up too.
 
 On a plan, the figure in the menu bar is your 5-hour window, or your week once that's 80% used. Signals keeps the reading fresh by asking Claude Code for it, the same as `/usage`, about once a minute while you work (and every 15 minutes otherwise), so you never need to run `/usage` yourself. Claude Code runs in the background with no window, no tokens and no session; Signals never uses your Claude login.
 
@@ -99,7 +99,7 @@ On a plan, the figure in the menu bar is your 5-hour window, or your week once t
 
 Everything stays on your computer. Signals doesn't have a server, doesn't collect analytics, and never uses your AI accounts' logins.
 
-- **What it reads:** the events each agent's hook passes it (prompt sent, tool used, waiting, finished), the usage Claude Code and Codex already save on your Mac, and the token counts in Claude Code's logs (for pay as you go).
+- **What it reads:** the events each agent's hook passes it (prompt sent, tool used, waiting, finished), the usage Claude Code and Codex save on your Mac, and the token counts in Claude Code's logs (for pay as you go). To keep your limits current, it asks Claude Code and Codex for them; they fetch them from Anthropic and OpenAI themselves, so Signals never sees your login.
 - **What it keeps,** in `~/.signals`: each session's state and a short title (Claude Code's own title, or the first line of your first prompt), your usage settings, and the latest usage reading. Not your prompts, and not your code.
 - **What it changes:** the hooks section of each agent's settings file (a backup is saved next to it), and a login item so it starts when you log in. On Windows, it also adds its folder to your PATH. `signals uninstall` removes all of it.
 

@@ -1,0 +1,114 @@
+#!/bin/bash
+# signals-refresh-codex: keeps the Codex plan reading fresh by asking Codex for
+# it. Codex's own app server (the one its editor extensions use) answers
+# account/rateLimits/read over stdin and stdout: no model call, no tokens, no
+# session. Signals never sees your ChatGPT login; Codex does the asking.
+#
+# Codex also writes its limits into its session logs on every turn, so while
+# you use Codex on this Mac those are fresh already. This covers the rest:
+# Codex used elsewhere (the web, the cloud, another computer) and resets. It
+# asks when
+#   - the newest reading (log or saved) is over 15 minutes old,
+#   - a 5-hour or weekly window has reset since it, or
+#   - SIGNALS_FRESH=1 (the usage menu was opened),
+# at most once a minute, and saves the answer to ~/.signals/usage/codex-limits.json
+# in the same shape as a log line (signals-meter uses whichever is newer).
+# After a failure it waits longer each time (up to 30 minutes; 6 hours if Codex
+# isn't signed in with ChatGPT). SIGNALS_NO_REFRESH=1 turns it off.
+#
+# Exit status: 0 always. Prints what it did.
+set -u
+export PATH="/opt/""homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+TB="${SIGNALS_HOME:-$HOME/.signals}/usage"
+[ -n "${SIGNALS_NO_REFRESH:-}" ] && { echo "off"; exit 0; }
+CX="${CODEX_HOME:-$HOME/.codex}"
+SAVED="$TB/codex-limits.json"
+STATUS="$TB/refresh-codex.json"
+mkdir -p "$TB"
+
+codex="${SIGNALS_CODEX:-}"
+if [ -z "$codex" ]; then
+  for c in "/opt/""homebrew/bin/codex" /usr/local/bin/codex "$HOME/.local/bin/codex"; do
+    [ -x "$c" ] && { codex="$c"; break; }
+  done
+  [ -z "$codex" ] && codex=$(command -v codex 2>/dev/null)
+fi
+[ -n "$codex" ] && [ -x "$codex" ] && [ -d "$CX" ] || { echo "no Codex"; exit 0; }
+
+now=$(date +%s)
+# The newest reading: the saved answer, or the newest log line with limits.
+log_line=$(find "$CX/sessions" -name 'rollout-*.jsonl' -mtime -8 -exec stat -f '%m %N' {} + 2>/dev/null \
+  | sort -rn | head -1 | cut -d' ' -f2- | while read -r f; do tail -c 1048576 "$f" | grep '"rate_limits"' | tail -1; done)
+read -r fetched r5 r7 < <({ cat "$SAVED" 2>/dev/null; printf '%s\n' "$log_line"; } | jq -rs '
+  map(select(.payload.rate_limits) | {t: ((.timestamp // "") | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0), r: .payload.rate_limits})
+  | (max_by(.t) // {t: 0, r: {}}) | [.t, (.r.primary.resets_at // 0), (.r.secondary.resets_at // 0)] | @tsv' 2>/dev/null)
+fetched=${fetched:-0} r5=${r5:-0} r7=${r7:-0}
+age=$((now - fetched))
+read -r last fails why_failed < <(jq -r '[.last // 0, .fails // 0, .why_failed // "-"] | @tsv' "$STATUS" 2>/dev/null)
+last=${last:-0} fails=${fails:-0}
+
+wait_s=60
+if [ "$fails" -gt 0 ]; then
+  wait_s=$((60 << (fails > 5 ? 5 : fails))); [ "$wait_s" -gt 1800 ] && wait_s=1800
+  [ "${why_failed:-}" = signed-out ] && wait_s=21600
+fi
+[ $((now - last)) -lt "$wait_s" ] && { echo "waiting (asked $((now - last))s ago)"; exit 0; }
+
+why=''
+if [ -n "${SIGNALS_FRESH:-}" ] && [ "$age" -ge 60 ]; then why=menu
+elif [ "$fetched" -eq 0 ] || [ "$age" -gt 900 ]; then why=old
+elif { [ "$r5" -gt 0 ] && [ "$r5" -le "$now" ]; } || { [ "$r7" -gt 0 ] && [ "$r7" -le "$now" ]; }; then why=reset
+fi
+[ -z "$why" ] && { echo "fresh (${age}s old)"; exit 0; }
+
+# One at a time (the app, the menu and the command line can all call this).
+lock="$TB/refresh-codex.lock"
+if ! mkdir "$lock" 2>/dev/null; then
+  [ $((now - $(stat -f %m "$lock" 2>/dev/null || echo "$now"))) -gt 60 ] || { echo "busy"; exit 0; }
+  rmdir "$lock" 2>/dev/null; mkdir "$lock" 2>/dev/null || { echo "busy"; exit 0; }
+fi
+work="$TB/refresh-codex.d"
+mkdir -p "$work"; rm -f "$work/in" "$work/out"; mkfifo "$work/in"
+trap 'rm -f "$work/in" "$work/out"; rmdir "$work" "$lock" 2>/dev/null' EXIT
+
+# A clean environment: nothing from an agent session this may run inside.
+(cd "$TB" && exec env -i HOME="$HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-${USER:-}}" PATH="$PATH" \
+   TMPDIR="${TMPDIR:-/tmp}" LANG="${LANG:-en_US.UTF-8}" ${CODEX_HOME:+CODEX_HOME="$CODEX_HOME"} \
+   "$codex" app-server) <"$work/in" >"$work/out" 2>/dev/null &
+pid=$!
+exec 3>"$work/in"
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"signals","version":"1"}}}' \
+  '{"jsonrpc":"2.0","method":"initialized"}' '{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read"}' >&3 2>/dev/null
+# Give up after 15 seconds (it normally takes about one).
+for ((i = 0; i < ${SIGNALS_REFRESH_TIMEOUT:-15} * 10; i++)); do
+  grep -q '"id":2' "$work/out" 2>/dev/null && break
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 0.1
+done
+exec 3>&-
+for ((i = 0; i < 20; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+kill "$pid" 2>/dev/null
+{ wait "$pid"; } 2>/dev/null
+
+reply=$(grep '"id":2' "$work/out" 2>/dev/null | tail -1)
+why_failed=''
+# Saved as a log line: {timestamp, payload: {rate_limits: {primary, secondary, plan_type}}}.
+saved=$(jq -c --arg ts "$(date -u -r "$now" +%Y-%m-%dT%H:%M:%S.000Z)" '
+  .result.rateLimits | select(.primary or .secondary)
+  | def w: if . == null then null else {used_percent: (.usedPercent // 0), window_minutes: .windowDurationMins, resets_at: .resetsAt} end;
+    {timestamp: $ts, type: "event_msg", source: "codex app-server",
+     payload: {type: "token_count", rate_limits: {primary: (.primary | w), secondary: (.secondary | w), plan_type: .planType}}}' \
+  <<<"$reply" 2>/dev/null)
+if [ -n "$saved" ]; then
+  printf '%s\n' "$saved" > "$SAVED.tmp.$$" && mv "$SAVED.tmp.$$" "$SAVED"
+  fails=0; result="refreshed ($why)"
+else
+  fails=$((fails + 1)); result="failed ($why)"
+  # Not signed in with ChatGPT (an API key has no plan limits): ask rarely.
+  if grep -qiE 'chatgpt|auth|login' <<<"$(jq -r '.error.message // empty' <<<"$reply" 2>/dev/null)"; then
+    why_failed=signed-out; result="no ChatGPT login"
+  fi
+fi
+jq -nc --argjson last "$now" --argjson fails "$fails" --arg result "$result" --arg why "$why" --arg wf "$why_failed" \
+  '{last: $last, fails: $fails, result: $result, why: $why, why_failed: $wf}' > "$STATUS.tmp.$$" && mv "$STATUS.tmp.$$" "$STATUS"
+echo "$result"

@@ -22,7 +22,7 @@ pass=$(cat "$TB/pass" 2>/dev/null || echo 0)
 state="$TB/state.json"
 # Refresh if the menu bar app hasn't updated the state in the last 2 minutes.
 age=$(( $(date +%s) - $(stat -f %m "$state" 2>/dev/null || echo 0) ))
-[ "$age" -gt 120 ] && SIGNALS_NO_NOTIFY=1 "$LIBEXEC/signals-meter" >/dev/null 2>&1
+[ "$age" -gt 120 ] && SIGNALS_NO_NOTIFY=1 SIGNALS_NO_REFRESH=1 "$LIBEXEC/signals-meter" >/dev/null 2>&1   # spend only: never wait on a refresh
 
 read -r status spend < <(jq -r '[.status, .spend] | @tsv' "$state" 2>/dev/null) || exit 0
 [ "$status" = "over" ] || exit 0

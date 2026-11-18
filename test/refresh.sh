@@ -149,5 +149,84 @@ echo '{"mode":"estimate","budget":100}' > "$HOME/.signals/usage/config.json"
 check "pay-as-you-go modes never run it" 0 "$(calls)"
 
 echo
+echo "Codex: asked through its own app server"
+RC="$ROOT/libexec/signals-refresh-codex"
+# A stand-in Codex app server: answers on stdout, as $HOME/codex.mode says.
+CFAKE="$HOME/fakebin/codex"
+cat > "$CFAKE" <<'SH'
+#!/bin/bash
+echo "$*" >> "$HOME/codex.calls"; env > "$HOME/codex.env"
+case "$(cat "$HOME/codex.mode" 2>/dev/null)" in
+  fail) exit 1 ;;
+  hang) exec sleep 30 ;;
+esac
+while read -r l; do
+  case "$l" in
+    *'"id":1'*) echo '{"id":1,"result":{}}' ;;
+    *'"id":2'*)
+      if [ "$(cat "$HOME/codex.mode" 2>/dev/null)" = signedout ]; then
+        echo '{"id":2,"error":{"code":-32600,"message":"codex account authentication required to read rate limits"}}'
+      else
+        echo '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":12,"windowDurationMins":300,"resetsAt":4070908800},"secondary":{"usedPercent":34,"windowDurationMins":10080,"resetsAt":4071168000},"planType":"pro"}}}'
+      fi ;;
+  esac
+done
+SH
+chmod +x "$CFAKE"
+export SIGNALS_CODEX="$CFAKE"
+CXS="$HOME/.codex/sessions/2026/11/18"
+codex_log() { # age-seconds [5-hour reset epoch]: a Codex log whose newest limits are that old
+  mkdir -p "$CXS"
+  jq -nc --arg ts "$(date -u -r $(( $(date +%s) - $1 )) +%Y-%m-%dT%H:%M:%S.000Z)" --argjson r5 "${2:-4070908800}" \
+    '{timestamp: $ts, type: "event_msg", payload: {type: "token_count",
+      rate_limits: {primary: {used_percent: 5, window_minutes: 300, resets_at: $r5},
+                    secondary: {used_percent: 9, window_minutes: 10080, resets_at: 4071168000}, plan_type: "plus"}}}' > "$CXS/rollout-test.jsonl"
+}
+creset() { rm -f "$HOME/.signals/usage/refresh-codex.json" "$HOME/.signals/usage/codex-limits.json" "$HOME/codex.calls" "$HOME/codex.mode"; }
+ccalls() { [ -f "$HOME/codex.calls" ] && wc -l < "$HOME/codex.calls" | tr -d ' ' || echo 0; }
+
+check "no Codex folder: does nothing" "no Codex" "$("$RC")"
+creset; codex_log 120
+check "the log's limits are recent (Codex in use here): not asked" "fresh (120s old)" "$("$RC" | sed -E 's/12[0-2]s/120s/')"
+check "  ...and Codex isn't run" 0 "$(ccalls)"
+creset; codex_log 1000
+check "limits over 15 minutes old (Codex used elsewhere): asks" "refreshed (old)" "$("$RC")"
+check "  ...runs its app server" app-server "$(cat "$HOME/codex.calls")"
+check "  ...in a clean environment" 0 "$(grep -c '^CLAUDE' "$HOME/codex.env")"
+check "  ...and saves the answer like a log line" "12 34 pro" \
+  "$(jq -r '.payload.rate_limits | "\(.primary.used_percent) \(.secondary.used_percent) \(.plan_type)"' "$HOME/.signals/usage/codex-limits.json")"
+check "  ...right after, it waits" "waiting (asked 0s ago)" "$("$RC" | sed 's/[0-9]*s ago/0s ago/')"
+check "  ...and nothing is left behind" "" "$(ls "$HOME/.signals/usage" | grep -E 'refresh-codex\.(d|lock)')"
+creset; codex_log 300 "$(( $(date +%s) - 10 ))"
+check "the 5-hour window reset since the log: asks" "refreshed (reset)" "$("$RC")"
+creset; codex_log 300
+check "the usage menu was opened: asks" "refreshed (menu)" "$(SIGNALS_FRESH=1 "$RC")"
+creset; codex_log 300; echo signedout > "$HOME/codex.mode"
+check "not signed in with ChatGPT: says so" "no ChatGPT login" "$(SIGNALS_FRESH=1 "$RC")"
+jq '.last -= 1900' "$HOME/.signals/usage/refresh-codex.json" > "$HOME/r.tmp" && mv "$HOME/r.tmp" "$HOME/.signals/usage/refresh-codex.json"
+check "  ...and asks again only hours later" waiting "$(SIGNALS_FRESH=1 "$RC" | cut -d' ' -f1)"
+creset; codex_log 1000; echo hang > "$HOME/codex.mode"
+start=$(date +%s)
+check "Codex hangs: given up on" "failed (old)" "$(SIGNALS_REFRESH_TIMEOUT=2 "$RC")"
+check "  ...within the timeout" yes "$([ $(( $(date +%s) - start )) -lt 10 ] && echo yes)"
+check "  ...with nothing left running" no "$(pgrep -f "$CFAKE" >/dev/null && echo yes || echo no)"
+check "  ...and the lock let go" no "$([ -d "$HOME/.signals/usage/refresh-codex.lock" ] && echo yes || echo no)"
+creset; codex_log 1000
+echo '{"mode":"plan","plan":{"id":"max","label":"Claude Max 5x"}}' > "$HOME/.signals/usage/config.json"
+SIGNALS_NO_REFRESH= SIGNALS_DETECTED_PLAN=max "$METER" >/dev/null 2>&1
+check "the meter shows Codex's own answer when it's newer than the logs" "ChatGPT Pro 12 34" \
+  "$(jq -r '.codex | "\(.plan) \(.session.pct) \(.weekly.pct)"' "$HOME/.signals/usage/state.json")"
+jq -c --arg ts "$(date -u -r $(( $(date +%s) - 60 )) +%Y-%m-%dT%H:%M:%S.000Z)" '.timestamp = $ts' "$HOME/.signals/usage/codex-limits.json" > "$HOME/c.tmp" \
+  && mv "$HOME/c.tmp" "$HOME/.signals/usage/codex-limits.json"   # the saved answer is a minute old
+codex_log 0
+SIGNALS_NO_REFRESH=1 SIGNALS_DETECTED_PLAN=max "$METER" >/dev/null 2>&1
+check "  ...and the log when that's newer" "ChatGPT Plus 5 9" \
+  "$(jq -r '.codex | "\(.plan) \(.session.pct) \(.weekly.pct)"' "$HOME/.signals/usage/state.json")"
+creset; codex_log 1000; jq '.updated = 0' "$HOME/.signals/usage/state.json" > "$HOME/s.tmp" && mv "$HOME/s.tmp" "$HOME/.signals/usage/state.json"
+echo '{"mode":"estimate","budget":100}' > "$HOME/.signals/usage/config.json"; touch -t 202001010000 "$HOME/.signals/usage/state.json"
+echo '{"prompt":"hi"}' | "$ROOT/libexec/signals-gate" >/dev/null 2>&1
+check "the budget gate never waits on a refresh" 0 "$(ccalls)"
+
+echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
