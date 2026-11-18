@@ -2,6 +2,23 @@
 
 All notable changes, newest first. Versions follow [Semantic Versioning](https://semver.org).
 
+## [1.3.0] - 2026-11-18
+
+### Features
+
+- check for a new plan reading the moment the last one turns a minute old
+- keep the plan reading fresh by asking Claude Code for it
+
+### Fixes
+
+- stop Signals draining the battery in long Claude Code sessions
+- show plan usage without an estimate marker
+
+### Other
+
+- test: refresh checks allow for the clock ticking over a second
+- ci: the install check reads the tap's version from its file (Homebrew won't load an untrusted tap for brew info)
+
 ## [1.2.0] - 2026-11-10
 
 ### Features
