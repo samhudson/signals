@@ -2,7 +2,7 @@
 
 All notable changes, newest first. Versions follow [Semantic Versioning](https://semver.org).
 
-## [1.4.1] - Unreleased
+## [1.4.1] - 2026-11-20
 
 ### Fixes
 
