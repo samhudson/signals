@@ -462,6 +462,10 @@ final class MenuBar: NSObject, NSMenuDelegate {
     var pending = false
     var lastSessions = Date.distantPast
     var appearance: NSKeyValueObservation?
+    /// Whether the art was last drawn for a dark menu bar.
+    var drawnDark: Bool?
+    /// Holds off appearance redraws for a second after one.
+    var appearanceCooldown: Timer?
     let openSettings: (String?) -> Void
 
     init(openSettings: @escaping (String?) -> Void) {
@@ -480,7 +484,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         redraw()
         // The dots and gate are drawn in the menu bar's text colour, which
         // changes with light and dark menu bars.
-        appearance = sessionsItem.button?.observe(\.effectiveAppearance) { [weak self] _, _ in Task { @MainActor in self?.redraw() } }
+        appearance = sessionsItem.button?.observe(\.effectiveAppearance) { [weak self] _, _ in Task { @MainActor in self?.appearanceChanged() } }
         watch()
         timers = [Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshSessions() } },
                   Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshUsage() } }]
@@ -553,7 +557,8 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     func redraw() {
         guard let b = sessionsItem.button else { return }
-        let dark = b.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let dark = isDark(b)
+        drawnDark = dark
         let fg = dark ? NSColor(white: 1, alpha: 0.92) : NSColor(white: 0, alpha: 0.85)
         b.image = StatusArt.image(rows: state.rows, usage: nil, fg: fg)
         b.toolTip = state.rows.isEmpty ? "Signals: no agent sessions" : "Signals: " + summary(state)
@@ -561,9 +566,26 @@ final class MenuBar: NSObject, NSMenuDelegate {
             ub.image = gate
             ub.attributedTitle = StatusArt.attributedTitle(usage, fg: fg)
             ub.toolTip = usageTip
-            usageItem.isVisible = true
-        } else {
+            if !usageItem.isVisible { usageItem.isVisible = true }
+        } else if usageItem.isVisible {
             usageItem.isVisible = false
+        }
+    }
+
+    func isDark(_ b: NSView) -> Bool { b.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
+
+    /// Redraws when the menu bar really turns light or dark. AppKit can report
+    /// the appearance again after a redraw (seen with a full CPU core busy in
+    /// 1.4.0), so a report with no change is ignored, and even real changes
+    /// redraw at most once a second.
+    func appearanceChanged() {
+        guard appearanceCooldown == nil, let b = sessionsItem.button, isDark(b) != drawnDark else { return }
+        redraw()
+        appearanceCooldown = Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.appearanceCooldown = nil
+                self?.appearanceChanged()   // catches a change during the second
+            }
         }
     }
 
