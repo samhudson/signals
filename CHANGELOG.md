@@ -2,6 +2,12 @@
 
 All notable changes, newest first. Versions follow [Semantic Versioning](https://semver.org).
 
+## [1.4.1] - Unreleased
+
+### Fixes
+
+- stop the menu bar icon redrawing in a loop, which on some Macs kept a CPU core busy and drained the battery
+
 ## [1.4.0] - 2026-11-18
 
 ### Features
